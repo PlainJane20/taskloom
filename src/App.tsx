@@ -1,13 +1,14 @@
-import { Columns3, Route, ShieldCheck } from "lucide-react";
+import { Columns3, PlugZap, Route, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { AutomationDashboard } from "./components/AutomationDashboard";
 import { KanbanBoard } from "./components/KanbanBoard";
+import { IntegrationsDashboard } from "./components/IntegrationsDashboard";
 import { useAgentBridge } from "./hooks/useAgentBridge";
 import taskloomIcon from "../src-tauri/icons/128x128.png";
 
 export default function App() {
   const bridge = useAgentBridge();
-  const [view, setView] = useState<"board" | "automations">("automations");
+  const [view, setView] = useState<"board" | "automations" | "integrations">("automations");
 
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-7 text-slate-100">
@@ -28,9 +29,10 @@ export default function App() {
       <nav aria-label="Workspace views" className="mx-auto mb-7 flex max-w-[1600px] gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
         <button onClick={() => setView("automations")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition ${view === "automations" ? "bg-violet-400 text-slate-950" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"}`}><Route size={16} /> Automations</button>
         <button onClick={() => setView("board")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition ${view === "board" ? "bg-cyan-400 text-slate-950" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"}`}><Columns3 size={16} /> Task board</button>
+        <button onClick={() => setView("integrations")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition ${view === "integrations" ? "bg-emerald-400 text-slate-950" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"}`}><PlugZap size={16} /> Integrations</button>
       </nav>
       {bridge.error && <p role="alert" className="mx-auto mb-4 max-w-[1600px] rounded-lg border border-rose-900 bg-rose-950/50 px-4 py-3 text-sm text-rose-300">{bridge.error}</p>}
-      {view === "automations" ? <AutomationDashboard bridge={bridge} /> : <KanbanBoard bridge={bridge} />}
+      {view === "automations" ? <AutomationDashboard bridge={bridge} /> : view === "integrations" ? <IntegrationsDashboard bridge={bridge} /> : <KanbanBoard bridge={bridge} />}
     </main>
   );
 }

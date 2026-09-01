@@ -3,6 +3,30 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-09-01
+
+### Added
+
+- Provider-neutral issue adapter contract with a GitHub implementation backed by the official `gh` client.
+- Dedicated Integrations workspace for repository connection checks, issue imports, sync health, conflicts, and history.
+- Idempotent inbound import and reconciliation of open GitHub Issues into linked Taskloom cards.
+- Automatic outbound Issue closure when a linked Taskloom card reaches Completed.
+- Durable provider connections, external issue links, sync audit events, and retry scheduling in SQLite.
+- Actionable GitHub Issue badges on imported cards and an explicit conflict-override control.
+
+### Safety
+
+- Delegates authentication to GitHub CLI and never reads or persists its token in Taskloom state.
+- Invokes `gh` as an argument array without a shell and validates repositories as `owner/name`.
+- Re-reads an Issue before closure and blocks outbound mutation when GitHub contains a newer edit.
+- Queues retryable provider/rate-limit failures with bounded exponential backoff and a five-attempt cap.
+- Filters pull requests returned by GitHub's shared Issues endpoint.
+
+### Verification
+
+- Expands automated coverage to 84 tests: 66 Python/MCP and 18 React interactions.
+- Adds provider persistence, idempotency, reconciliation, conflict, retry, connection, import, and override tests.
+
 ## [0.6.0] - 2026-09-01
 
 ### Added
@@ -101,6 +125,7 @@ All notable Taskloom changes are documented here. This project follows
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
 [0.4.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0
+[0.7.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.0
 [0.6.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.6.0
 [0.5.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.5.0
 [0.3.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.3.0
