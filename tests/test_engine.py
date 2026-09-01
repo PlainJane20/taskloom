@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,20 @@ class FakeLLM:
         assert provider in {"ollama", "openai"}
         self.calls.append((prompt, current, provider, model))
         return self.result
+
+
+class FlakyLLM(FakeLLM):
+    def __init__(self) -> None:
+        super().__init__("recovered\n")
+        self.attempts = 0
+
+    async def generate(
+        self, prompt: str, current: str, provider: str, model: str | None = None,
+    ) -> str:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise RuntimeError("temporary provider failure")
+        return await super().generate(prompt, current, provider, model)
 
 
 def test_parse_message_accepts_valid_json() -> None:
@@ -397,3 +412,164 @@ async def test_workflow_rejects_forward_or_unknown_dependency(tmp_path: Path) ->
         })
 
     assert caught.value.code == "invalid_dependency"
+
+
+@pytest.mark.asyncio
+async def test_workflow_management_updates_duplicates_and_archives(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "managed", "name": "Managed", "description": "Original",
+            "approvalMode": "observe", "steps": [{
+                "id": "plan", "name": "Plan", "agentId": "planner", "kind": "analysis",
+                "instruction": "Make a plan", "dependsOn": [],
+            }],
+        },
+    })
+
+    updated = await engine.handle({
+        "type": "update_workflow",
+        "payload": {
+            "workflowId": "managed", "name": "Managed v2", "description": "Updated",
+            "approvalMode": "trusted", "enabled": True, "steps": [{
+                "id": "build", "name": "Build", "agentId": "builder", "kind": "file_edit",
+                "instruction": "Build it", "dependsOn": [],
+            }],
+        },
+    })
+    duplicate = await engine.handle({
+        "type": "duplicate_workflow", "payload": {"workflowId": "managed"},
+    })
+    duplicate_id = duplicate[0]["payload"]["workflow"]["id"]
+    await engine.handle({
+        "type": "archive_workflow", "payload": {"workflowId": "managed"},
+    })
+
+    restarted = TaskloomEngine(tmp_path, llm=FakeLLM())
+    state = restarted.state_payload()
+    assert updated[0]["payload"]["workflow"]["name"] == "Managed v2"
+    assert restarted.workflows["managed"].archived is True
+    assert duplicate_id in restarted.workflows
+    assert restarted.workflows[duplicate_id].enabled is False
+    assert "managed" not in {workflow["id"] for workflow in state["workflows"]}
+
+
+@pytest.mark.asyncio
+async def test_schedule_rejects_unsafe_interval(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+
+    with pytest.raises(ProtocolError) as caught:
+        await engine.handle({
+            "type": "create_trigger",
+            "payload": {
+                "workflowId": "safe-delivery", "name": "Too frequent",
+                "intervalMinutes": 1, "goal": "Run", "targetFile": "output.md",
+            },
+        })
+
+    assert caught.value.code == "unsafe_interval"
+
+
+@pytest.mark.asyncio
+async def test_due_schedule_runs_once_and_persists_events(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM("analysis complete\n"))
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "scheduled-analysis", "name": "Scheduled analysis",
+            "description": "Read-only schedule", "approvalMode": "observe", "steps": [{
+                "id": "analyze", "name": "Analyze", "agentId": "planner", "kind": "analysis",
+                "instruction": "Analyze the goal", "dependsOn": [],
+            }],
+        },
+    })
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    created = await engine.handle({
+        "type": "create_trigger",
+        "payload": {
+            "triggerId": "daily", "workflowId": "scheduled-analysis", "name": "Daily analysis",
+            "intervalMinutes": 60, "goal": "Review status", "targetFile": "status.md",
+            "nextRunAt": (now - timedelta(minutes=1)).isoformat(),
+        },
+    })
+
+    first = await engine.run_due_triggers(now)
+    second = await engine.run_due_triggers(now)
+
+    assert created[0]["payload"]["trigger"]["id"] == "daily"
+    assert len(first) == 1
+    assert first[0].status == "completed"
+    assert second == []
+    assert engine.triggers["daily"].last_run_id == first[0].id
+    assert datetime.fromisoformat(engine.triggers["daily"].next_run_at) == now + timedelta(hours=1)
+    assert {event.event_type for event in engine.events if event.workflow_run_id == first[0].id} >= {
+        "run_created", "triggered", "run_started", "step_completed", "run_completed",
+    }
+
+    restarted = TaskloomEngine(tmp_path, llm=FakeLLM())
+    restored_run = restarted.serialize_workflow_run(restarted.workflow_runs[first[0].id])
+    assert restarted.triggers["daily"].last_run_id == first[0].id
+    assert restored_run["events"][-1]["type"] == "run_completed"
+
+
+@pytest.mark.asyncio
+async def test_run_now_executes_paused_schedule(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM("done\n"))
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "manual-schedule", "name": "Manual schedule", "description": "Test",
+            "approvalMode": "observe", "steps": [{
+                "id": "analyze", "name": "Analyze", "agentId": "planner", "kind": "analysis",
+                "instruction": "Analyze", "dependsOn": [],
+            }],
+        },
+    })
+    await engine.handle({
+        "type": "create_trigger",
+        "payload": {
+            "triggerId": "paused", "workflowId": "manual-schedule", "name": "Paused",
+            "intervalMinutes": 30, "goal": "Run manually", "targetFile": "manual.md",
+            "enabled": False,
+        },
+    })
+
+    response = await engine.handle({
+        "type": "run_trigger_now", "payload": {"triggerId": "paused"},
+    })
+
+    assert response[0]["payload"]["workflowRun"]["status"] == "completed"
+    assert engine.triggers["paused"].enabled is False
+
+
+@pytest.mark.asyncio
+async def test_failed_workflow_can_retry_from_failed_step(tmp_path: Path) -> None:
+    llm = FlakyLLM()
+    engine = TaskloomEngine(tmp_path, llm=llm)
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "retryable", "name": "Retryable", "description": "Test retry",
+            "approvalMode": "observe", "steps": [{
+                "id": "analyze", "name": "Analyze", "agentId": "planner", "kind": "analysis",
+                "instruction": "Analyze", "dependsOn": [],
+            }],
+        },
+    })
+    await engine.handle({
+        "type": "run_workflow",
+        "payload": {"workflowId": "retryable", "goal": "Recover", "targetFile": "retry.md"},
+    })
+    run = next(run for run in engine.workflow_runs.values() if run.workflow_id == "retryable")
+    assert run.status == "failed"
+
+    response = await engine.handle({
+        "type": "retry_workflow", "payload": {"workflowRunId": run.id},
+    })
+
+    assert response[0]["payload"]["workflowRun"]["status"] == "completed"
+    assert llm.attempts == 2
+    assert "run_retried" in {
+        event.event_type for event in engine.events if event.workflow_run_id == run.id
+    }

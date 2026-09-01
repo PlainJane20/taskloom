@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +83,7 @@ class Workflow:
     approval_mode: str
     steps: tuple[WorkflowStep, ...]
     enabled: bool = True
+    archived: bool = False
 
 
 @dataclass
@@ -120,6 +121,31 @@ class PlanApproval:
     workflow_run_id: str
     workflow_id: str
     summary: str
+
+
+@dataclass
+class AutomationTrigger:
+    id: str
+    workflow_id: str
+    name: str
+    interval_minutes: int
+    goal: str
+    target_file: str
+    enabled: bool = True
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    last_run_id: str | None = None
+    error: str | None = None
+
+
+@dataclass
+class ExecutionEvent:
+    id: str
+    workflow_run_id: str
+    event_type: str
+    message: str
+    created_at: str
+    step_run_id: str | None = None
 
 
 class StateStore:
@@ -173,6 +199,7 @@ class StateStore:
                 approval_mode TEXT NOT NULL,
                 steps TEXT NOT NULL,
                 enabled INTEGER NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
 
@@ -215,10 +242,37 @@ class StateStore:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS automation_triggers (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                interval_minutes INTEGER NOT NULL,
+                goal TEXT NOT NULL,
+                target_file TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                next_run_at TEXT,
+                last_run_at TEXT,
+                last_run_id TEXT,
+                error TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workflow_id) REFERENCES workflows(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_events (
+                id TEXT PRIMARY KEY,
+                workflow_run_id TEXT NOT NULL,
+                step_run_id TEXT,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+            );
             """
         )
         self._ensure_column("pending_changes", "workflow_run_id", "TEXT")
         self._ensure_column("pending_changes", "step_run_id", "TEXT")
+        self._ensure_column("workflows", "archived", "INTEGER NOT NULL DEFAULT 0")
 
     def _ensure_column(self, table: str, name: str, declaration: str) -> None:
         columns = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})")}
@@ -336,26 +390,29 @@ class StateStore:
 
     def load_workflows(self) -> list[Workflow]:
         rows = self.connection.execute(
-            "SELECT id, name, description, approval_mode, steps, enabled FROM workflows ORDER BY rowid"
+            "SELECT id, name, description, approval_mode, steps, enabled, archived FROM workflows ORDER BY rowid"
         ).fetchall()
         return [Workflow(
             id=row["id"], name=row["name"], description=row["description"],
             approval_mode=row["approval_mode"], steps=self._decode_steps(row["steps"]),
-            enabled=bool(row["enabled"]),
+            enabled=bool(row["enabled"]), archived=bool(row["archived"]),
         ) for row in rows]
 
     def save_workflow(self, workflow: Workflow) -> None:
         with self.connection:
             self.connection.execute(
                 """
-                INSERT INTO workflows (id, name, description, approval_mode, steps, enabled, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO workflows
+                    (id, name, description, approval_mode, steps, enabled, archived, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description,
                     approval_mode=excluded.approval_mode, steps=excluded.steps,
-                    enabled=excluded.enabled, updated_at=excluded.updated_at
+                    enabled=excluded.enabled, archived=excluded.archived,
+                    updated_at=excluded.updated_at
                 """,
                 (workflow.id, workflow.name, workflow.description, workflow.approval_mode,
                  self._encode_steps(workflow.steps), int(workflow.enabled),
+                 int(workflow.archived),
                  datetime.now(timezone.utc).isoformat()),
             )
 
@@ -440,6 +497,66 @@ class StateStore:
     def delete_plan_approval(self, request_id: str) -> None:
         with self.connection:
             self.connection.execute("DELETE FROM plan_approvals WHERE request_id = ?", (request_id,))
+
+    def load_triggers(self) -> list[AutomationTrigger]:
+        rows = self.connection.execute(
+            """SELECT id, workflow_id, name, interval_minutes, goal, target_file, enabled,
+                      next_run_at, last_run_at, last_run_id, error
+                 FROM automation_triggers ORDER BY rowid"""
+        ).fetchall()
+        return [AutomationTrigger(
+            id=row["id"], workflow_id=row["workflow_id"], name=row["name"],
+            interval_minutes=row["interval_minutes"], goal=row["goal"],
+            target_file=row["target_file"], enabled=bool(row["enabled"]),
+            next_run_at=row["next_run_at"], last_run_at=row["last_run_at"],
+            last_run_id=row["last_run_id"], error=row["error"],
+        ) for row in rows]
+
+    def save_trigger(self, trigger: AutomationTrigger) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO automation_triggers
+                    (id, workflow_id, name, interval_minutes, goal, target_file, enabled,
+                     next_run_at, last_run_at, last_run_id, error, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET workflow_id=excluded.workflow_id,
+                    name=excluded.name, interval_minutes=excluded.interval_minutes,
+                    goal=excluded.goal, target_file=excluded.target_file,
+                    enabled=excluded.enabled, next_run_at=excluded.next_run_at,
+                    last_run_at=excluded.last_run_at, last_run_id=excluded.last_run_id,
+                    error=excluded.error, updated_at=excluded.updated_at
+                """,
+                (trigger.id, trigger.workflow_id, trigger.name, trigger.interval_minutes,
+                 trigger.goal, trigger.target_file, int(trigger.enabled), trigger.next_run_at,
+                 trigger.last_run_at, trigger.last_run_id, trigger.error,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+
+    def delete_trigger(self, trigger_id: str) -> None:
+        with self.connection:
+            self.connection.execute("DELETE FROM automation_triggers WHERE id = ?", (trigger_id,))
+
+    def load_events(self) -> list[ExecutionEvent]:
+        rows = self.connection.execute(
+            """SELECT id, workflow_run_id, step_run_id, event_type, message, created_at
+                 FROM execution_events ORDER BY created_at, rowid"""
+        ).fetchall()
+        return [ExecutionEvent(
+            id=row["id"], workflow_run_id=row["workflow_run_id"],
+            step_run_id=row["step_run_id"], event_type=row["event_type"],
+            message=row["message"], created_at=row["created_at"],
+        ) for row in rows]
+
+    def save_event(self, event: ExecutionEvent) -> None:
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO execution_events
+                   (id, workflow_run_id, step_run_id, event_type, message, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (event.id, event.workflow_run_id, event.step_run_id,
+                 event.event_type, event.message, event.created_at),
+            )
 
 
 def parse_message(line: str) -> dict[str, Any]:
@@ -606,6 +723,8 @@ class TaskloomEngine:
         self.plan_approvals = {
             approval.request_id: approval for approval in self.state.load_plan_approvals()
         }
+        self.triggers = {trigger.id: trigger for trigger in self.state.load_triggers()}
+        self.events = self.state.load_events()
         self._run_lock = asyncio.Lock()
         self._seed_defaults()
         self._recover_interrupted_state()
@@ -730,6 +849,7 @@ class TaskloomEngine:
         return {
             "id": workflow.id, "name": workflow.name, "description": workflow.description,
             "approvalMode": workflow.approval_mode, "enabled": workflow.enabled,
+            "archived": workflow.archived,
             "steps": [{
                 "id": step.id, "name": step.name, "agentId": step.agent_id, "kind": step.kind,
                 "instruction": step.instruction, "dependsOn": list(step.depends_on),
@@ -754,6 +874,21 @@ class TaskloomEngine:
             "planApproved": run.plan_approved, "startedAt": run.started_at,
             "completedAt": run.completed_at,
             "steps": [self.serialize_step_run(step) for step in steps],
+            "events": [{
+                "id": event.id, "workflowRunId": event.workflow_run_id,
+                "stepRunId": event.step_run_id, "type": event.event_type,
+                "message": event.message, "createdAt": event.created_at,
+            } for event in self.events if event.workflow_run_id == run.id],
+        }
+
+    @staticmethod
+    def serialize_trigger(trigger: AutomationTrigger) -> dict[str, Any]:
+        return {
+            "id": trigger.id, "workflowId": trigger.workflow_id, "name": trigger.name,
+            "intervalMinutes": trigger.interval_minutes, "goal": trigger.goal,
+            "targetFile": trigger.target_file, "enabled": trigger.enabled,
+            "nextRunAt": trigger.next_run_at, "lastRunAt": trigger.last_run_at,
+            "lastRunId": trigger.last_run_id, "error": trigger.error,
         }
 
     def serialize_plan_approval(self, approval: PlanApproval) -> dict[str, Any]:
@@ -775,14 +910,30 @@ class TaskloomEngine:
             "tasks": [self.serialize_task(task) for task in self.tasks.values()],
             "approvals": [self.serialize_change(change) for change in self.pending.values()],
             "agents": [self.serialize_agent(agent) for agent in self.agents.values()],
-            "workflows": [self.serialize_workflow(workflow) for workflow in self.workflows.values()],
+            "workflows": [
+                self.serialize_workflow(workflow) for workflow in self.workflows.values()
+                if not workflow.archived
+            ],
             "workflowRuns": [
                 self.serialize_workflow_run(run) for run in reversed(tuple(self.workflow_runs.values()))
             ],
             "planApprovals": [
                 self.serialize_plan_approval(approval) for approval in self.plan_approvals.values()
             ],
+            "triggers": [self.serialize_trigger(trigger) for trigger in self.triggers.values()],
         }
+
+    def _record_event(
+        self, run_id: str, event_type: str, message: str, step_run_id: str | None = None,
+    ) -> ExecutionEvent:
+        event = ExecutionEvent(
+            id=str(uuid.uuid4()), workflow_run_id=run_id, step_run_id=step_run_id,
+            event_type=event_type, message=message,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.events.append(event)
+        self.state.save_event(event)
+        return event
 
     def _validate_workflow(self, workflow: Workflow) -> None:
         if workflow.approval_mode not in self.APPROVAL_MODES:
@@ -805,6 +956,85 @@ class TaskloomEngine:
                 )
             seen.add(step.id)
 
+    def _create_workflow_run(
+        self, workflow: Workflow, goal: str, target_file: str,
+    ) -> tuple[WorkflowRun, PlanApproval | None]:
+        if workflow.archived or not workflow.enabled:
+            raise ProtocolError("workflow_not_found", "Workflow is missing or disabled")
+        self.snapshots.resolve_path(target_file)
+        run = WorkflowRun(
+            id=str(uuid.uuid4()), workflow_id=workflow.id, goal=goal, target_file=target_file,
+        )
+        self.workflow_runs[run.id] = run
+        self.state.save_workflow_run(run)
+        for definition in workflow.steps:
+            step = StepRun(
+                id=f"{run.id}:{definition.id}", workflow_run_id=run.id,
+                step_id=definition.id, agent_id=definition.agent_id,
+                name=definition.name, kind=definition.kind,
+            )
+            self.step_runs[step.id] = step
+            self.state.save_step_run(step)
+        self._record_event(run.id, "run_created", f"Created workflow run for {workflow.name}")
+        if workflow.approval_mode != "approve_plan":
+            return run, None
+        approval = PlanApproval(
+            request_id=str(uuid.uuid4()), workflow_run_id=run.id,
+            workflow_id=workflow.id,
+            summary=f"Approve {len(workflow.steps)} steps before Taskloom begins",
+        )
+        self.plan_approvals[approval.request_id] = approval
+        self.state.save_plan_approval(approval)
+        run.status = "needs_approval"
+        self.state.save_workflow_run(run)
+        self._record_event(run.id, "approval_required", "Workflow plan requires approval")
+        return run, approval
+
+    async def run_due_triggers(self, now: datetime | None = None) -> list[WorkflowRun]:
+        """Run each due interval trigger at most once and advance its next deadline."""
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        started: list[WorkflowRun] = []
+        for trigger in tuple(self.triggers.values()):
+            if not trigger.enabled or not trigger.next_run_at:
+                continue
+            try:
+                due_at = datetime.fromisoformat(trigger.next_run_at).astimezone(timezone.utc)
+            except ValueError:
+                due_at = current
+            if due_at > current:
+                continue
+            trigger.next_run_at = (
+                current + timedelta(minutes=trigger.interval_minutes)
+            ).isoformat()
+            trigger.last_run_at = current.isoformat()
+            trigger.error = None
+            try:
+                workflow = self.workflows.get(trigger.workflow_id)
+                if workflow is None:
+                    raise ProtocolError("workflow_not_found", "Scheduled workflow no longer exists")
+                run, _ = self._create_workflow_run(
+                    workflow, trigger.goal, trigger.target_file,
+                )
+                trigger.last_run_id = run.id
+                self.state.save_trigger(trigger)
+                self._record_event(run.id, "triggered", f"Started by schedule: {trigger.name}")
+                if run.status != "needs_approval":
+                    await self._execute_workflow(run)
+                started.append(run)
+            except Exception as exc:
+                trigger.error = str(exc)
+                self.state.save_trigger(trigger)
+        return started
+
+    async def run_scheduler(self, emit: Any) -> None:
+        """Keep interval triggers active while the local desktop engine is running."""
+        poll_seconds = max(5, int(os.environ.get("TASKLOOM_SCHEDULER_POLL_SECONDS", "15")))
+        while True:
+            started = await self.run_due_triggers()
+            if started:
+                await emit({"type": "state_snapshot", "payload": self.state_payload()})
+            await asyncio.sleep(poll_seconds)
+
     async def _execute_workflow(self, run: WorkflowRun) -> None:
         async with self._run_lock:
             if run.status == "cancelled":
@@ -812,8 +1042,10 @@ class TaskloomEngine:
             workflow = self.workflows[run.workflow_id]
             run.status = "running"
             run.error = None
+            run.completed_at = None
             run.started_at = run.started_at or datetime.now(timezone.utc).isoformat()
             self.state.save_workflow_run(run)
+            self._record_event(run.id, "run_started", "Workflow execution started")
             completed = {
                 step.step_id for step in self.step_runs.values()
                 if step.workflow_run_id == run.id and step.status == "completed"
@@ -831,6 +1063,7 @@ class TaskloomEngine:
                     return
                 run.current_step = definition.id
                 self.state.save_workflow_run(run)
+                self._record_event(run.id, "step_started", f"Started {definition.name}", step.id)
                 should_continue = await self._execute_step(workflow, run, definition, step)
                 if not should_continue:
                     return
@@ -839,6 +1072,7 @@ class TaskloomEngine:
             run.current_step = None
             run.completed_at = datetime.now(timezone.utc).isoformat()
             self.state.save_workflow_run(run)
+            self._record_event(run.id, "run_completed", "Workflow completed successfully")
 
     async def _execute_step(
         self, workflow: Workflow, run: WorkflowRun, definition: WorkflowStep, step: StepRun,
@@ -902,6 +1136,10 @@ class TaskloomEngine:
                     run.status = "needs_approval"
                     self.state.save_step_run(step)
                     self.state.save_workflow_run(run)
+                    self._record_event(
+                        run.id, "approval_required",
+                        f"{definition.name} is waiting for file approval", step.id,
+                    )
                     return False
                 elif workflow.approval_mode == "trusted" or (
                     workflow.approval_mode == "approve_plan" and run.plan_approved
@@ -914,6 +1152,7 @@ class TaskloomEngine:
                     raise ProtocolError("plan_not_approved", "The workflow plan has not been approved")
             step.completed_at = datetime.now(timezone.utc).isoformat()
             self.state.save_step_run(step)
+            self._record_event(run.id, "step_completed", f"Completed {definition.name}", step.id)
             return True
         except Exception as exc:
             step.status = "failed"
@@ -924,6 +1163,7 @@ class TaskloomEngine:
             run.completed_at = datetime.now(timezone.utc).isoformat()
             self.state.save_step_run(step)
             self.state.save_workflow_run(run)
+            self._record_event(run.id, "step_failed", run.error, step.id)
             return False
 
     async def handle(self, message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1013,39 +1253,85 @@ class TaskloomEngine:
             return [self._response(
                 request_id, "workflow_created", {"workflow": self.serialize_workflow(workflow)},
             )]
+        if kind == "update_workflow":
+            self._require(payload, "workflowId", "name", "description", "approvalMode", "steps")
+            workflow = self.workflows.get(str(payload["workflowId"]))
+            if workflow is None or workflow.archived:
+                raise ProtocolError("workflow_not_found", "Workflow does not exist")
+            raw_steps = payload["steps"]
+            if not isinstance(raw_steps, list):
+                raise ProtocolError("invalid_steps", "Workflow steps must be a list")
+            updated = Workflow(
+                id=workflow.id, name=str(payload["name"]), description=str(payload["description"]),
+                approval_mode=str(payload["approvalMode"]),
+                steps=tuple(WorkflowStep(
+                    id=str(item.get("id") or uuid.uuid4()), name=str(item["name"]),
+                    agent_id=str(item["agentId"]), kind=str(item["kind"]),
+                    instruction=str(item["instruction"]),
+                    depends_on=tuple(str(value) for value in item.get("dependsOn", [])),
+                ) for item in raw_steps),
+                enabled=bool(payload.get("enabled", workflow.enabled)),
+            )
+            self._validate_workflow(updated)
+            self.workflows[updated.id] = updated
+            self.state.save_workflow(updated)
+            return [self._response(
+                request_id, "workflow_updated", {"workflow": self.serialize_workflow(updated)},
+            )]
+        if kind == "duplicate_workflow":
+            self._require(payload, "workflowId")
+            source = self.workflows.get(str(payload["workflowId"]))
+            if source is None or source.archived:
+                raise ProtocolError("workflow_not_found", "Workflow does not exist")
+            duplicate = Workflow(
+                id=str(uuid.uuid4()), name=str(payload.get("name") or f"{source.name} copy"),
+                description=source.description, approval_mode=source.approval_mode,
+                steps=source.steps, enabled=False,
+            )
+            self.workflows[duplicate.id] = duplicate
+            self.state.save_workflow(duplicate)
+            return [self._response(
+                request_id, "workflow_created", {"workflow": self.serialize_workflow(duplicate)},
+            )]
+        if kind == "set_workflow_enabled":
+            self._require(payload, "workflowId", "enabled")
+            workflow = self.workflows.get(str(payload["workflowId"]))
+            if workflow is None or workflow.archived:
+                raise ProtocolError("workflow_not_found", "Workflow does not exist")
+            workflow.enabled = bool(payload["enabled"])
+            self.state.save_workflow(workflow)
+            return [self._response(
+                request_id, "workflow_updated", {"workflow": self.serialize_workflow(workflow)},
+            )]
+        if kind == "archive_workflow":
+            self._require(payload, "workflowId")
+            workflow = self.workflows.get(str(payload["workflowId"]))
+            if workflow is None or workflow.archived:
+                raise ProtocolError("workflow_not_found", "Workflow does not exist")
+            if any(run.workflow_id == workflow.id and run.status in {
+                "queued", "running", "needs_approval",
+            } for run in self.workflow_runs.values()):
+                raise ProtocolError("workflow_in_use", "Cancel active runs before deleting this workflow")
+            workflow.enabled = False
+            workflow.archived = True
+            self.state.save_workflow(workflow)
+            for trigger in self.triggers.values():
+                if trigger.workflow_id == workflow.id:
+                    trigger.enabled = False
+                    self.state.save_trigger(trigger)
+            return [self._response(request_id, "workflow_archived", {"workflowId": workflow.id})]
         if kind == "run_workflow":
             self._require(payload, "workflowId", "goal", "targetFile")
             workflow = self.workflows.get(str(payload["workflowId"]))
-            if workflow is None or not workflow.enabled:
+            if workflow is None:
                 raise ProtocolError("workflow_not_found", "Workflow is missing or disabled")
-            self.snapshots.resolve_path(str(payload["targetFile"]))
-            run = WorkflowRun(
-                id=str(uuid.uuid4()), workflow_id=workflow.id, goal=str(payload["goal"]),
-                target_file=str(payload["targetFile"]),
+            run, approval = self._create_workflow_run(
+                workflow, str(payload["goal"]), str(payload["targetFile"]),
             )
-            self.workflow_runs[run.id] = run
-            self.state.save_workflow_run(run)
-            for definition in workflow.steps:
-                step = StepRun(
-                    id=f"{run.id}:{definition.id}", workflow_run_id=run.id,
-                    step_id=definition.id, agent_id=definition.agent_id,
-                    name=definition.name, kind=definition.kind,
-                )
-                self.step_runs[step.id] = step
-                self.state.save_step_run(step)
             created = self._response(
                 request_id, "workflow_run_created", {"workflowRun": self.serialize_workflow_run(run)},
             )
-            if workflow.approval_mode == "approve_plan":
-                approval = PlanApproval(
-                    request_id=str(uuid.uuid4()), workflow_run_id=run.id,
-                    workflow_id=workflow.id,
-                    summary=f"Approve {len(workflow.steps)} steps before Taskloom begins",
-                )
-                self.plan_approvals[approval.request_id] = approval
-                self.state.save_plan_approval(approval)
-                run.status = "needs_approval"
-                self.state.save_workflow_run(run)
+            if approval:
                 return [created, {
                     "type": "plan_approval_required",
                     "payload": self.serialize_plan_approval(approval),
@@ -1057,6 +1343,104 @@ class TaskloomEngine:
                 for change in self.pending.values() if change.workflow_run_id == run.id
             )
             return events
+        if kind == "create_trigger":
+            self._require(payload, "workflowId", "name", "intervalMinutes", "goal", "targetFile")
+            workflow = self.workflows.get(str(payload["workflowId"]))
+            if workflow is None or workflow.archived:
+                raise ProtocolError("workflow_not_found", "Workflow does not exist")
+            try:
+                interval = int(payload["intervalMinutes"])
+            except (TypeError, ValueError) as exc:
+                raise ProtocolError("invalid_interval", "Schedule interval must be a whole number") from exc
+            if interval < 15:
+                raise ProtocolError("unsafe_interval", "Schedule interval must be at least 15 minutes")
+            self.snapshots.resolve_path(str(payload["targetFile"]))
+            trigger = AutomationTrigger(
+                id=str(payload.get("triggerId") or uuid.uuid4()), workflow_id=workflow.id,
+                name=str(payload["name"]), interval_minutes=interval, goal=str(payload["goal"]),
+                target_file=str(payload["targetFile"]), enabled=bool(payload.get("enabled", True)),
+                next_run_at=str(payload.get("nextRunAt") or (
+                    datetime.now(timezone.utc) + timedelta(minutes=interval)
+                ).isoformat()),
+            )
+            self.triggers[trigger.id] = trigger
+            self.state.save_trigger(trigger)
+            return [self._response(
+                request_id, "trigger_created", {"trigger": self.serialize_trigger(trigger)},
+            )]
+        if kind == "update_trigger":
+            self._require(
+                payload, "triggerId", "name", "intervalMinutes", "goal", "targetFile", "enabled",
+            )
+            trigger = self.triggers.get(str(payload["triggerId"]))
+            if trigger is None:
+                raise ProtocolError("trigger_not_found", "Schedule does not exist")
+            try:
+                interval = int(payload["intervalMinutes"])
+            except (TypeError, ValueError) as exc:
+                raise ProtocolError("invalid_interval", "Schedule interval must be a whole number") from exc
+            if interval < 15:
+                raise ProtocolError("unsafe_interval", "Schedule interval must be at least 15 minutes")
+            self.snapshots.resolve_path(str(payload["targetFile"]))
+            trigger.name = str(payload["name"])
+            trigger.interval_minutes = interval
+            trigger.goal = str(payload["goal"])
+            trigger.target_file = str(payload["targetFile"])
+            trigger.enabled = bool(payload["enabled"])
+            trigger.next_run_at = str(payload.get("nextRunAt") or (
+                datetime.now(timezone.utc) + timedelta(minutes=interval)
+            ).isoformat())
+            trigger.error = None
+            self.state.save_trigger(trigger)
+            return [self._response(
+                request_id, "trigger_updated", {"trigger": self.serialize_trigger(trigger)},
+            )]
+        if kind == "set_trigger_enabled":
+            self._require(payload, "triggerId", "enabled")
+            trigger = self.triggers.get(str(payload["triggerId"]))
+            if trigger is None:
+                raise ProtocolError("trigger_not_found", "Schedule does not exist")
+            trigger.enabled = bool(payload["enabled"])
+            if trigger.enabled:
+                trigger.next_run_at = (
+                    datetime.now(timezone.utc) + timedelta(minutes=trigger.interval_minutes)
+                ).isoformat()
+            self.state.save_trigger(trigger)
+            return [self._response(
+                request_id, "trigger_updated", {"trigger": self.serialize_trigger(trigger)},
+            )]
+        if kind == "delete_trigger":
+            self._require(payload, "triggerId")
+            trigger = self.triggers.pop(str(payload["triggerId"]), None)
+            if trigger is None:
+                raise ProtocolError("trigger_not_found", "Schedule does not exist")
+            self.state.delete_trigger(trigger.id)
+            return [self._response(request_id, "trigger_deleted", {"triggerId": trigger.id})]
+        if kind == "run_trigger_now":
+            self._require(payload, "triggerId")
+            trigger = self.triggers.get(str(payload["triggerId"]))
+            if trigger is None:
+                raise ProtocolError("trigger_not_found", "Schedule does not exist")
+            workflow = self.workflows.get(trigger.workflow_id)
+            if workflow is None:
+                raise ProtocolError("workflow_not_found", "Scheduled workflow no longer exists")
+            current = datetime.now(timezone.utc)
+            trigger.last_run_at = current.isoformat()
+            trigger.next_run_at = (
+                current + timedelta(minutes=trigger.interval_minutes)
+            ).isoformat()
+            trigger.error = None
+            run, _ = self._create_workflow_run(workflow, trigger.goal, trigger.target_file)
+            trigger.last_run_id = run.id
+            self.state.save_trigger(trigger)
+            self._record_event(run.id, "triggered", f"Started manually from schedule: {trigger.name}")
+            if run.status != "needs_approval":
+                await self._execute_workflow(run)
+            return [self._response(
+                request_id, "trigger_ran",
+                {"trigger": self.serialize_trigger(trigger),
+                 "workflowRun": self.serialize_workflow_run(run)},
+            ), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "plan_approval_decision":
             self._require(payload, "requestId", "decision")
             if payload["decision"] not in {"approve", "reject"}:
@@ -1071,21 +1455,24 @@ class TaskloomEngine:
                 run.status = "cancelled"
                 run.error = "Plan rejected by user"
                 run.completed_at = datetime.now(timezone.utc).isoformat()
+                self._record_event(run.id, "plan_rejected", "Workflow plan rejected by user")
             elif payload["decision"] == "approve":
                 run.plan_approved = True
                 self.state.save_workflow_run(run)
+                self._record_event(run.id, "plan_approved", "Workflow plan approved by user")
                 await self._execute_workflow(run)
             self.state.save_workflow_run(run)
             return [self._response(
                 request_id, "workflow_run_updated", {"workflowRun": self.serialize_workflow_run(run)},
             ), {"type": "state_snapshot", "payload": self.state_payload()}]
-        if kind == "resume_workflow":
+        if kind in {"resume_workflow", "retry_workflow"}:
             self._require(payload, "workflowRunId")
             run = self.workflow_runs.get(str(payload["workflowRunId"]))
             if run is None:
                 raise ProtocolError("workflow_run_not_found", "Workflow run does not exist")
             if run.status not in {"queued", "failed"}:
                 raise ProtocolError("invalid_run_state", f"Cannot resume a {run.status} workflow")
+            self._record_event(run.id, "run_retried", "Workflow execution retried by user")
             await self._execute_workflow(run)
             return [self._response(
                 request_id, "workflow_run_updated", {"workflowRun": self.serialize_workflow_run(run)},
@@ -1099,6 +1486,7 @@ class TaskloomEngine:
             run.error = "Cancelled by user"
             run.completed_at = datetime.now(timezone.utc).isoformat()
             self.state.save_workflow_run(run)
+            self._record_event(run.id, "run_cancelled", "Workflow cancelled by user")
             return [self._response(
                 request_id, "workflow_run_updated", {"workflowRun": self.serialize_workflow_run(run)},
             )]
@@ -1128,6 +1516,7 @@ class TaskloomEngine:
                     step.output = change.after
                     step.completed_at = datetime.now(timezone.utc).isoformat()
                     self.state.save_step_run(step)
+                    self._record_event(run.id, "change_approved", f"Approved {step.name}", step.id)
                     await self._execute_workflow(run)
                 else:
                     step.status = "rejected"
@@ -1138,6 +1527,7 @@ class TaskloomEngine:
                     run.completed_at = datetime.now(timezone.utc).isoformat()
                     self.state.save_step_run(step)
                     self.state.save_workflow_run(run)
+                    self._record_event(run.id, "change_rejected", f"Rejected {step.name}", step.id)
             return [self._response(
                 request_id, "task_updated",
                 {"task": self.serialize_task(task), "snapshotId": snapshot_id},
@@ -1189,15 +1579,20 @@ async def run_stdio(engine: TaskloomEngine) -> None:
             print(f"Unexpected engine error: {exc}", file=sys.stderr)
             await emit({"id": request_id, "type": "error", "ok": False, "error": {"code": "internal_error", "message": str(exc)}})
 
-    while True:
-        line = await loop.run_in_executor(None, sys.stdin.readline)
-        if line == "":
-            break
-        job = asyncio.create_task(process(line))
-        jobs.add(job)
-        job.add_done_callback(jobs.discard)
-    if jobs:
-        await asyncio.gather(*jobs)
+    scheduler = asyncio.create_task(engine.run_scheduler(emit))
+    try:
+        while True:
+            line = await loop.run_in_executor(None, sys.stdin.readline)
+            if line == "":
+                break
+            job = asyncio.create_task(process(line))
+            jobs.add(job)
+            job.add_done_callback(jobs.discard)
+        if jobs:
+            await asyncio.gather(*jobs)
+    finally:
+        scheduler.cancel()
+        await asyncio.gather(scheduler, return_exceptions=True)
 
 
 def cli() -> None:
