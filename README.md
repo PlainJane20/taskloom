@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.5 is a working multi-agent automation platform. Reusable agents, editable dependency-aware workflows, durable interval and filesystem triggers, guarded test-command gates, four autonomy policies, retryable execution history, local model generation, human approvals, and snapshots are implemented and tested.
+> **Project status:** Taskloom v0.6.0 is a working governed multi-agent automation platform. It includes an official MCP v2 adapter, confidence-gated and idempotent task ingestion, clustered progress, agent/session/branch swimlanes, collision warnings, durable terminal traces, cooperative agent controls, dependency-aware workflows, guarded validation commands, local model generation, human approvals, and recoverable file snapshots—all covered by 65 automated tests.
 
 ## Why Taskloom
 
