@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { documentDir, join, resourceDir } from "@tauri-apps/api/path";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import type {
-  AgentProfile, AgentTask, ApprovalRequest, AutomationTrigger, BridgeRequest, BridgeResponse,
+  AgentProfile, AgentSession, AgentTask, ApprovalRequest, AutomationTrigger, BridgeRequest, BridgeResponse,
   FileTrigger, PlanApprovalRequest, Workflow, WorkflowRun,
 } from "../types";
 
@@ -11,6 +11,7 @@ export type BridgeStatus = "connecting" | "connected" | "error" | "stopped";
 export interface AgentBridge {
   status: BridgeStatus;
   tasks: AgentTask[];
+  sessions: AgentSession[];
   approval: ApprovalRequest | null;
   planApproval: PlanApprovalRequest | null;
   agents: AgentProfile[];
@@ -22,6 +23,7 @@ export interface AgentBridge {
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
   runTask: (taskId: string) => Promise<void>;
+  controlSession: (sessionId: string, action: "pause" | "resume" | "kill") => Promise<void>;
   decideApproval: (requestId: string, decision: "approve" | "reject") => Promise<void>;
   decidePlanApproval: (requestId: string, decision: "approve" | "reject") => Promise<void>;
   createAgent: (input: Omit<AgentProfile, "id">) => Promise<AgentProfile>;
@@ -56,6 +58,7 @@ function isTauriRuntime(): boolean {
 export function useAgentBridge(): AgentBridge {
   const [status, setStatus] = useState<BridgeStatus>("connecting");
   const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [planApproval, setPlanApproval] = useState<PlanApprovalRequest | null>(null);
   const [agents, setAgents] = useState<AgentProfile[]>([]);
@@ -94,6 +97,9 @@ export function useAgentBridge(): AgentBridge {
       const restoredApprovals = message.payload.approvals;
       const restoredPlanApprovals = message.payload.planApprovals;
       if (Array.isArray(restoredTasks)) setTasks(restoredTasks as AgentTask[]);
+      if (Array.isArray(message.payload.sessions)) {
+        setSessions(message.payload.sessions as unknown as AgentSession[]);
+      }
       if (Array.isArray(restoredApprovals)) {
         setApproval((restoredApprovals[0] as ApprovalRequest | undefined) ?? null);
       }
@@ -233,6 +239,13 @@ export function useAgentBridge(): AgentBridge {
     }
   }, [send]);
 
+  const controlSession = useCallback(async (
+    sessionId: string, action: "pause" | "resume" | "kill",
+  ) => {
+    await send({ type: "control_agent_session", payload: { sessionId, action } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
   const decideApproval = useCallback(async (requestId: string, decision: "approve" | "reject") => {
     await send({ type: "approval_decision", payload: { requestId, decision } });
     setApproval(null);
@@ -346,9 +359,9 @@ export function useAgentBridge(): AgentBridge {
   }, [send]);
 
   return {
-    status, tasks, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
+    status, tasks, sessions, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
     error, send,
-    createTask, runTask, decideApproval, decidePlanApproval, createAgent, createWorkflow,
+    createTask, runTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
     runWorkflow, retryWorkflow, cancelWorkflow, createTrigger, setTriggerEnabled,
     runTriggerNow, deleteTrigger, createFileTrigger, setFileTriggerEnabled, deleteFileTrigger,

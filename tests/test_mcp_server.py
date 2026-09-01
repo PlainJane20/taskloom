@@ -18,7 +18,10 @@ async def test_mcp_lists_governed_tools_with_required_schema(tmp_path: Path) -> 
         result = await client.list_tools()
 
     tools = {tool.name: tool for tool in result.tools}
-    assert set(tools) == {"create_task", "update_task", "add_log", "get_board_state"}
+    assert set(tools) == {
+        "create_task", "update_task", "add_log", "get_board_state",
+        "get_agent_control_state", "pause_agent", "resume_agent", "kill_agent",
+    }
     create_schema = tools["create_task"].input_schema
     assert set(create_schema["required"]) >= {
         "title", "prompt", "agent_id", "session_id", "confidence_score", "idempotency_key",
@@ -38,11 +41,13 @@ async def test_mcp_calls_share_governance_and_trace_service(tmp_path: Path) -> N
             "title": "MCP test", "prompt": "Create a safe note", "file_path": "scratch/mcp.md",
             "agent_id": "codex", "session_id": "session-mcp", "confidence_score": 0.95,
             "idempotency_key": "mcp-create-1", "git_sha": "abc12345",
+            "control_capabilities": ["pause", "resume", "kill"],
         })
         duplicate = await client.call_tool("create_task", {
             "title": "MCP test", "prompt": "Create a safe note", "file_path": "scratch/mcp.md",
             "agent_id": "codex", "session_id": "session-mcp", "confidence_score": 0.95,
             "idempotency_key": "mcp-create-1", "git_sha": "abc12345",
+            "control_capabilities": ["pause", "resume", "kill"],
         })
         task_id = created.structured_content["task"]["id"]
         logged = await client.call_tool("add_log", {
@@ -50,12 +55,18 @@ async def test_mcp_calls_share_governance_and_trace_service(tmp_path: Path) -> N
             "message": "Ran validation", "idempotency_key": "mcp-log-1",
             "command_executed": "TOKEN=private npm test", "stdout": "passed", "exit_code": 0,
         })
+        paused = await client.call_tool("pause_agent", {"session_id": "session-mcp"})
+        control_state = await client.call_tool(
+            "get_agent_control_state", {"session_id": "session-mcp"},
+        )
 
     # Structured results are available without scraping text content.
     assert created.structured_content["disposition"] == "created"
     assert duplicate.structured_content["disposition"] == "duplicate"
     assert logged.is_error is False
     assert "private" not in logged.structured_content["worklog"]["trace"]["commandExecuted"]
+    assert paused.structured_content["session"]["status"] == "idle"
+    assert control_state.structured_content["session"]["status"] == "idle"
     task = next(iter(engine.tasks.values()))
     assert task.agent_id == "codex"
     assert engine.state.load_task_links(task.id)[0]["gitSha"] == "abc12345"

@@ -52,6 +52,7 @@ def create_mcp_server(workspace: Path) -> tuple[MCPServer, TaskloomEngine]:
         provider: Literal["ollama", "openai"] = "ollama",
         git_sha: str | None = None,
         pr_url: str | None = None,
+        control_capabilities: list[Literal["pause", "resume", "kill"]] | None = None,
     ) -> dict[str, Any]:
         """Create a governed card; low confidence routes to Drafts and related work clusters."""
         payload = {
@@ -60,6 +61,7 @@ def create_mcp_server(workspace: Path) -> tuple[MCPServer, TaskloomEngine]:
             "filePath": file_path, "branchName": branch_name,
             "correlationKey": correlation_key, "parentTaskId": parent_task_id,
             "provider": provider, "gitSha": git_sha, "prUrl": pr_url, "source": "mcp",
+            "controlCapabilities": control_capabilities or [],
         }
         async with write_lock:
             return engine.ingest_create_task(payload)
@@ -148,6 +150,40 @@ def create_mcp_server(workspace: Path) -> tuple[MCPServer, TaskloomEngine]:
     async def get_board_state() -> dict[str, Any]:
         """Return tasks, sessions, worklogs, approvals, agents, and workflow runs."""
         return engine.state_payload()
+
+    @server.tool(
+        name="get_agent_control_state",
+        title="Check cooperative agent control state",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        structured_output=True,
+    )
+    async def get_agent_control_state(session_id: Annotated[str, Field(min_length=1)]) -> dict[str, Any]:
+        """Poll this between operations and honor idle/completed status before continuing."""
+        engine.sessions = {item.id: item for item in engine.state.load_sessions()}
+        session = engine.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session '{session_id}' does not exist")
+        return {"session": engine.serialize_session(session)}
+
+    def register_control_tool(name: str, action: Literal["pause", "resume", "kill"], title: str) -> None:
+        @server.tool(
+            name=name,
+            title=title,
+            annotations=ToolAnnotations(
+                readOnlyHint=False, destructiveHint=action == "kill",
+                idempotentHint=True, openWorldHint=False,
+            ),
+            structured_output=True,
+        )
+        async def control_agent(session_id: Annotated[str, Field(min_length=1)]) -> dict[str, Any]:
+            """Persist a cooperative control request for a capable agent session."""
+            async with write_lock:
+                session = engine.control_agent_session(session_id, action)
+                return {"session": engine.serialize_session(session), "action": action}
+
+    register_control_tool("pause_agent", "pause", "Pause cooperative agent session")
+    register_control_tool("resume_agent", "resume", "Resume cooperative agent session")
+    register_control_tool("kill_agent", "kill", "Stop cooperative agent session")
 
     return server, engine
 

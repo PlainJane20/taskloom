@@ -1937,13 +1937,13 @@ class TaskloomEngine:
     def _touch_session(self, payload: dict[str, Any]) -> AgentSession:
         self._require(payload, "agentId", "sessionId")
         session_id = str(payload["sessionId"])
-        status = str(payload.get("agentStatus") or "active").lower()
-        if status not in self.SESSION_STATUSES:
-            raise ProtocolError("invalid_agent_status", f"Unsupported agent status: {status}")
         now = datetime.now(timezone.utc).isoformat()
         session = self.sessions.get(session_id) or AgentSession(
             id=session_id, agent_id=str(payload["agentId"]), started_at=now,
         )
+        status = str(payload.get("agentStatus") or session.status or "active").lower()
+        if status not in self.SESSION_STATUSES:
+            raise ProtocolError("invalid_agent_status", f"Unsupported agent status: {status}")
         if session.agent_id != str(payload["agentId"]):
             raise ProtocolError("session_agent_mismatch", "sessionId is already owned by another agent")
         session.status = status
@@ -1956,6 +1956,27 @@ class TaskloomEngine:
                 raise ProtocolError("invalid_capabilities", "controlCapabilities must be a list")
             session.control_capabilities = tuple(str(item) for item in capabilities)
         self.sessions[session.id] = session
+        self.state.save_session(session)
+        return session
+
+    def control_agent_session(self, session_id: str, action: str) -> AgentSession:
+        session = self.sessions.get(session_id)
+        if session is None:
+            # Refresh for a second engine process sharing the same WAL database.
+            self.sessions = {item.id: item for item in self.state.load_sessions()}
+            session = self.sessions.get(session_id)
+        if session is None:
+            raise ProtocolError("session_not_found", f"Session '{session_id}' does not exist")
+        if action not in {"pause", "resume", "kill"}:
+            raise ProtocolError("invalid_control_action", f"Unsupported control action: {action}")
+        if action not in session.control_capabilities:
+            raise ProtocolError(
+                "control_not_supported", f"Session '{session_id}' did not advertise {action} support",
+            )
+        session.status = {"pause": "idle", "resume": "active", "kill": "completed"}[action]
+        session.last_heartbeat_at = datetime.now(timezone.utc).isoformat()
+        session.completed_at = session.last_heartbeat_at if action == "kill" else None
+        session.error = "Stopped by user" if action == "kill" else None
         self.state.save_session(session)
         return session
 
@@ -2193,6 +2214,21 @@ class TaskloomEngine:
         if kind == "ingest_add_log":
             return [self._response(
                 request_id, "governed_log_ingested", self.ingest_add_log(payload),
+            )]
+        if kind == "control_agent_session":
+            self._require(payload, "sessionId", "action")
+            session = self.control_agent_session(str(payload["sessionId"]), str(payload["action"]))
+            return [self._response(
+                request_id, "agent_session_controlled", {"session": self.serialize_session(session)},
+            )]
+        if kind == "get_agent_control_state":
+            self._require(payload, "sessionId")
+            self.sessions = {item.id: item for item in self.state.load_sessions()}
+            session = self.sessions.get(str(payload["sessionId"]))
+            if session is None:
+                raise ProtocolError("session_not_found", "Agent session does not exist")
+            return [self._response(
+                request_id, "agent_control_state", {"session": self.serialize_session(session)},
             )]
         if kind == "create_task":
             self._require(payload, "title", "prompt", "filePath")

@@ -229,7 +229,7 @@ Set the timeout to `120` seconds and save. On the next run, Taskloom captures th
 
 ### Connect an MCP agent
 
-Taskloom exposes `create_task`, `update_task`, `add_log`, and `get_board_state` through the official MCP v2 stdio transport. Point an MCP-compatible host at:
+Taskloom exposes governed task/log tools plus cooperative `pause_agent`, `resume_agent`, and `kill_agent` controls through the official MCP v2 stdio transport. Point an MCP-compatible host at:
 
 ```json
 {
@@ -247,7 +247,7 @@ Taskloom exposes `create_task`, `update_task`, `add_log`, and `get_board_state` 
 }
 ```
 
-Agents must provide a stable idempotency key, agent/session identity, and a confidence score. Scores below `0.70` are routed to Drafts, repeated calls are idempotent, related events within the aggregation window become one progress card, and terminal output is bounded and secret-redacted before persistence.
+Agents must provide a stable idempotency key, agent/session identity, and a confidence score. Scores below `0.70` are routed to Drafts, repeated calls are idempotent, related events within the aggregation window become one progress card, and terminal output is bounded and secret-redacted before persistence. Agent controls are cooperative: a session advertises supported controls and polls `get_agent_control_state` between operations, so Taskloom never claims to terminate a process it does not own.
 
 ## Configuration
 
@@ -309,7 +309,7 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **60 automated tests**: 49 Python/MCP tests and 11 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **65 automated tests**: 50 Python/MCP tests and 15 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 

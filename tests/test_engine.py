@@ -1016,6 +1016,32 @@ async def test_governed_update_uses_optimistic_version_and_links(tmp_path: Path)
     assert conflict.value.code == "version_conflict"
 
 
+@pytest.mark.asyncio
+async def test_agent_controls_require_advertised_cooperative_capability(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "ingest_create_task",
+        "payload": governed_task_payload(controlCapabilities=["pause", "resume", "kill"]),
+    })
+
+    paused = await engine.handle({
+        "type": "control_agent_session",
+        "payload": {"sessionId": "session-1", "action": "pause"},
+    })
+    assert paused[0]["payload"]["session"]["status"] == "idle"
+    resumed = await engine.handle({
+        "type": "control_agent_session",
+        "payload": {"sessionId": "session-1", "action": "resume"},
+    })
+    assert resumed[0]["payload"]["session"]["status"] == "active"
+
+    engine.sessions["session-1"].control_capabilities = ()
+    engine.state.save_session(engine.sessions["session-1"])
+    with pytest.raises(ProtocolError) as unsupported:
+        engine.control_agent_session("session-1", "kill")
+    assert unsupported.value.code == "control_not_supported"
+
+
 def test_v6_schema_migrates_legacy_tasks_without_data_loss(tmp_path: Path) -> None:
     database = tmp_path / ".taskloom" / "taskloom.db"
     database.parent.mkdir(parents=True)
