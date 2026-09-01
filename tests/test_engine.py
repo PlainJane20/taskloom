@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -162,7 +163,9 @@ async def test_tasks_survive_engine_restart(tmp_path: Path) -> None:
     restored = await restarted_engine.handle({"id": "restore", "type": "list_tasks", "payload": {}})
 
     assert (tmp_path / ".taskloom" / "taskloom.db").is_file()
-    assert restored[0]["payload"]["tasks"] == [{
+    assert restored[0]["payload"]["tasks"][0] | {
+        "createdAt": None, "updatedAt": None, "links": [], "worklogs": [],
+    } == {
         "id": "persistent-task",
         "title": "Persistent task",
         "prompt": "Keep this task",
@@ -170,7 +173,22 @@ async def test_tasks_survive_engine_restart(tmp_path: Path) -> None:
         "filePath": "notes/persistent.md",
         "provider": "ollama",
         "error": None,
-    }]
+        "source": "manual",
+        "governanceState": "accepted",
+        "confidenceScore": None,
+        "agentId": None,
+        "sessionId": None,
+        "branchName": None,
+        "parentTaskId": None,
+        "clusterKey": None,
+        "progressCurrent": 0,
+        "progressTotal": 0,
+        "version": 1,
+        "createdAt": None,
+        "updatedAt": None,
+        "links": [],
+        "worklogs": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -872,3 +890,156 @@ async def test_validation_command_configuration_survives_restart(tmp_path: Path)
     assert step.command == ("npm", "test")
     assert step.timeout_seconds == 240
     assert serialized["steps"][0]["command"] == ["npm", "test"]
+
+
+def governed_task_payload(**changes: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "taskId": "governed-1", "title": "Update authentication module",
+        "prompt": "Implement the scoped authentication update", "filePath": "src/auth/index.ts",
+        "agentId": "builder-1", "sessionId": "session-1", "branchName": "feature/auth",
+        "confidenceScore": 0.91, "idempotencyKey": "event-1", "source": "mcp",
+    }
+    payload.update(changes)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_autonomous_task_is_routed_to_drafts(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+
+    response = await engine.handle({
+        "type": "ingest_create_task",
+        "payload": governed_task_payload(confidenceScore=0.42),
+    })
+
+    result = response[0]["payload"]
+    assert result["disposition"] == "drafted"
+    assert result["task"]["status"] == "draft"
+    assert result["task"]["governanceState"] == "pending_review"
+    assert result["task"]["confidenceScore"] == 0.42
+    assert result["task"]["sessionId"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_governed_ingestion_is_idempotent(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    message = {"type": "ingest_create_task", "payload": governed_task_payload()}
+
+    first = await engine.handle(message)
+    second = await engine.handle(message)
+
+    assert first[0]["payload"]["disposition"] == "created"
+    assert second[0]["payload"]["disposition"] == "duplicate"
+    assert len(engine.tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_minor_updates_cluster_under_one_parent_task(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    first = governed_task_payload(correlationKey="auth-batch")
+    second = governed_task_payload(
+        taskId="governed-2", idempotencyKey="event-2", correlationKey="auth-batch",
+        prompt="Finished a second small edit", summary="Updated token validation",
+    )
+
+    await engine.handle({"type": "ingest_create_task", "payload": first})
+    response = await engine.handle({"type": "ingest_create_task", "payload": second})
+
+    result = response[0]["payload"]
+    assert result["disposition"] == "clustered"
+    assert len(engine.tasks) == 1
+    assert result["task"]["progressTotal"] == 2
+    assert result["task"]["worklogs"][0]["kind"] == "clustered_update"
+    assert result["task"]["worklogs"][0]["message"] == "Updated token validation"
+
+
+@pytest.mark.asyncio
+async def test_worklog_trace_is_redacted_bounded_and_persistent(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({"type": "ingest_create_task", "payload": governed_task_payload()})
+
+    response = await engine.handle({
+        "type": "ingest_add_log",
+        "payload": {
+            "taskId": "governed-1", "agentId": "builder-1", "sessionId": "session-1",
+            "idempotencyKey": "log-1", "message": "Ran tests", "kind": "command",
+            "commandExecuted": "TOKEN=super-secret npm test", "stdout": "x" * 70_000,
+            "stderr": "Authorization: Bearer secret-token", "exitCode": 0,
+        },
+    })
+
+    trace = response[0]["payload"]["worklog"]["trace"]
+    assert trace["truncated"] is True
+    assert len(trace["stdout"].encode("utf-8")) == engine.MAX_COMMAND_OUTPUT_BYTES
+    assert "super-secret" not in trace["commandExecuted"]
+    assert "secret-token" not in trace["stderr"]
+    assert "[REDACTED]" in trace["commandExecuted"]
+
+    restarted = TaskloomEngine(tmp_path, llm=FakeLLM())
+    restored_task = restarted.serialize_task(restarted.tasks["governed-1"])
+    assert restored_task["worklogs"][0]["trace"]["contentSha256"] == trace["contentSha256"]
+    assert restored_task["worklogs"][0]["trace"]["worklogId"] == restored_task["worklogs"][0]["id"]
+    assert restarted.serialize_session(restarted.sessions["session-1"])["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_governed_update_uses_optimistic_version_and_links(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    created = await engine.handle({
+        "type": "ingest_create_task",
+        "payload": governed_task_payload(gitSha="abc123def", prUrl="https://github.com/acme/repo/pull/7"),
+    })
+    version = created[0]["payload"]["task"]["version"]
+
+    updated = await engine.handle({
+        "type": "ingest_update_task",
+        "payload": {
+            "taskId": "governed-1", "agentId": "builder-1", "sessionId": "session-1",
+            "idempotencyKey": "update-1", "expectedVersion": version,
+            "status": "active", "progressCurrent": 1, "progressTotal": 2,
+        },
+    })
+    assert updated[0]["payload"]["task"]["version"] == version + 1
+    assert {link["kind"] for link in updated[0]["payload"]["task"]["links"]} == {
+        "commit", "pull_request",
+    }
+
+    with pytest.raises(ProtocolError) as conflict:
+        await engine.handle({
+            "type": "ingest_update_task",
+            "payload": {
+                "taskId": "governed-1", "agentId": "builder-1", "sessionId": "session-1",
+                "idempotencyKey": "update-2", "expectedVersion": version,
+                "status": "completed",
+            },
+        })
+    assert conflict.value.code == "version_conflict"
+
+
+def test_v6_schema_migrates_legacy_tasks_without_data_loss(tmp_path: Path) -> None:
+    database = tmp_path / ".taskloom" / "taskloom.db"
+    database.parent.mkdir(parents=True)
+    connection = sqlite3.connect(database)
+    connection.execute(
+        """CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL,
+            status TEXT NOT NULL, file_path TEXT, provider TEXT NOT NULL,
+            error TEXT, updated_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("legacy", "Legacy", "Preserve me", "backlog", "legacy.md", "ollama", None,
+         datetime.now(timezone.utc).isoformat()),
+    )
+    connection.commit()
+    connection.close()
+
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+
+    assert engine.tasks["legacy"].source == "manual"
+    assert engine.tasks["legacy"].version == 1
+    migration = engine.state.connection.execute(
+        "SELECT name FROM schema_migrations WHERE version = 6"
+    ).fetchone()
+    assert migration["name"] == "governance-foundation"

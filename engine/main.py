@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fnmatch
+import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -41,6 +43,78 @@ class Task:
     status: str = "backlog"
     file_path: str | None = None
     provider: str = "ollama"
+    error: str | None = None
+    source: str = "manual"
+    governance_state: str = "accepted"
+    confidence_score: float | None = None
+    agent_id: str | None = None
+    session_id: str | None = None
+    branch_name: str | None = None
+    parent_task_id: str | None = None
+    cluster_key: str | None = None
+    progress_current: int = 0
+    progress_total: int = 0
+    version: int = 1
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass
+class AgentSession:
+    id: str
+    agent_id: str
+    status: str = "active"
+    branch_name: str | None = None
+    control_capabilities: tuple[str, ...] = ()
+    started_at: str | None = None
+    last_heartbeat_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
+
+
+@dataclass
+class TaskWorklog:
+    id: str
+    task_id: str
+    message: str
+    kind: str = "progress"
+    agent_id: str | None = None
+    session_id: str | None = None
+    progress_current: int | None = None
+    progress_total: int | None = None
+    trace_id: str | None = None
+    created_at: str | None = None
+
+
+@dataclass
+class ExecutionTrace:
+    id: str
+    task_id: str
+    worklog_id: str | None = None
+    command_executed: str | None = None
+    stdout_preview: str = ""
+    stderr_preview: str = ""
+    exit_code: int | None = None
+    truncated: bool = False
+    started_at: str | None = None
+    completed_at: str | None = None
+    content_sha256: str | None = None
+
+
+@dataclass
+class IngestionEvent:
+    id: str
+    idempotency_key: str
+    source: str
+    operation: str
+    disposition: str
+    raw_payload: str
+    agent_id: str | None = None
+    session_id: str | None = None
+    task_id: str | None = None
+    cluster_id: str | None = None
+    received_at: str | None = None
+    processed_at: str | None = None
     error: str | None = None
 
 
@@ -194,7 +268,98 @@ class StateStore:
                 file_path TEXT,
                 provider TEXT NOT NULL,
                 error TEXT,
+                source TEXT NOT NULL DEFAULT 'manual',
+                governance_state TEXT NOT NULL DEFAULT 'accepted',
+                confidence_score REAL,
+                agent_id TEXT,
+                session_id TEXT,
+                branch_name TEXT,
+                parent_task_id TEXT,
+                cluster_key TEXT,
+                progress_current INTEGER NOT NULL DEFAULT 0,
+                progress_total INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                branch_name TEXT,
+                status TEXT NOT NULL,
+                control_capabilities TEXT NOT NULL DEFAULT '[]',
+                started_at TEXT NOT NULL,
+                last_heartbeat_at TEXT NOT NULL,
+                completed_at TEXT,
+                error TEXT,
+                metadata TEXT NOT NULL DEFAULT '{}'
+            );
+
+            CREATE TABLE IF NOT EXISTS task_worklogs (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                agent_id TEXT,
+                session_id TEXT,
+                kind TEXT NOT NULL,
+                message TEXT NOT NULL,
+                progress_current INTEGER,
+                progress_total INTEGER,
+                trace_id TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_traces (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                worklog_id TEXT,
+                command_executed TEXT,
+                stdout_preview TEXT NOT NULL,
+                stderr_preview TEXT NOT NULL,
+                exit_code INTEGER,
+                truncated INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                completed_at TEXT,
+                content_sha256 TEXT,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(worklog_id) REFERENCES task_worklogs(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ingestion_events (
+                id TEXT PRIMARY KEY,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                agent_id TEXT,
+                session_id TEXT,
+                raw_payload TEXT NOT NULL,
+                disposition TEXT NOT NULL,
+                task_id TEXT,
+                cluster_id TEXT,
+                received_at TEXT NOT NULL,
+                processed_at TEXT,
+                error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS task_links (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                provider TEXT,
+                label TEXT,
+                url TEXT,
+                git_sha TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                UNIQUE(task_id, kind, url, git_sha)
             );
 
             CREATE TABLE IF NOT EXISTS pending_changes (
@@ -317,6 +482,28 @@ class StateStore:
         self._ensure_column("pending_changes", "workflow_run_id", "TEXT")
         self._ensure_column("pending_changes", "step_run_id", "TEXT")
         self._ensure_column("workflows", "archived", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("tasks", "source", "TEXT NOT NULL DEFAULT 'manual'")
+        self._ensure_column("tasks", "governance_state", "TEXT NOT NULL DEFAULT 'accepted'")
+        self._ensure_column("tasks", "confidence_score", "REAL")
+        self._ensure_column("tasks", "agent_id", "TEXT")
+        self._ensure_column("tasks", "session_id", "TEXT")
+        self._ensure_column("tasks", "branch_name", "TEXT")
+        self._ensure_column("tasks", "parent_task_id", "TEXT")
+        self._ensure_column("tasks", "cluster_key", "TEXT")
+        self._ensure_column("tasks", "progress_current", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("tasks", "progress_total", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("tasks", "version", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column("tasks", "created_at", "TEXT")
+        with self.connection:
+            self.connection.execute(
+                "UPDATE tasks SET created_at = updated_at WHERE created_at IS NULL"
+            )
+            self.connection.execute(
+                """INSERT OR IGNORE INTO schema_migrations
+                   (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)""",
+                (6, "governance-foundation", "taskloom-v0.6-governance",
+                 datetime.now(timezone.utc).isoformat()),
+            )
 
     def _ensure_column(self, table: str, name: str, declaration: str) -> None:
         columns = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})")}
@@ -326,22 +513,39 @@ class StateStore:
 
     def load_tasks(self) -> list[Task]:
         rows = self.connection.execute(
-            "SELECT id, title, prompt, status, file_path, provider, error FROM tasks ORDER BY updated_at, rowid"
+            """SELECT id, title, prompt, status, file_path, provider, error, source,
+                      governance_state, confidence_score, agent_id, session_id, branch_name,
+                      parent_task_id, cluster_key, progress_current, progress_total, version,
+                      created_at, updated_at
+                 FROM tasks ORDER BY updated_at, rowid"""
         ).fetchall()
         return [
             Task(
                 id=row["id"], title=row["title"], prompt=row["prompt"], status=row["status"],
                 file_path=row["file_path"], provider=row["provider"], error=row["error"],
+                source=row["source"], governance_state=row["governance_state"],
+                confidence_score=row["confidence_score"], agent_id=row["agent_id"],
+                session_id=row["session_id"], branch_name=row["branch_name"],
+                parent_task_id=row["parent_task_id"], cluster_key=row["cluster_key"],
+                progress_current=row["progress_current"], progress_total=row["progress_total"],
+                version=row["version"], created_at=row["created_at"], updated_at=row["updated_at"],
             )
             for row in rows
         ]
 
     def save_task(self, task: Task) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        task.created_at = task.created_at or now
+        task.updated_at = now
         with self.connection:
             self.connection.execute(
                 """
-                INSERT INTO tasks (id, title, prompt, status, file_path, provider, error, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks
+                    (id, title, prompt, status, file_path, provider, error, source,
+                     governance_state, confidence_score, agent_id, session_id, branch_name,
+                     parent_task_id, cluster_key, progress_current, progress_total, version,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     prompt = excluded.prompt,
@@ -349,13 +553,193 @@ class StateStore:
                     file_path = excluded.file_path,
                     provider = excluded.provider,
                     error = excluded.error,
+                    source = excluded.source,
+                    governance_state = excluded.governance_state,
+                    confidence_score = excluded.confidence_score,
+                    agent_id = excluded.agent_id,
+                    session_id = excluded.session_id,
+                    branch_name = excluded.branch_name,
+                    parent_task_id = excluded.parent_task_id,
+                    cluster_key = excluded.cluster_key,
+                    progress_current = excluded.progress_current,
+                    progress_total = excluded.progress_total,
+                    version = excluded.version,
+                    created_at = excluded.created_at,
                     updated_at = excluded.updated_at
                 """,
                 (
                     task.id, task.title, task.prompt, task.status, task.file_path, task.provider,
-                    task.error, datetime.now(timezone.utc).isoformat(),
+                    task.error, task.source, task.governance_state, task.confidence_score,
+                    task.agent_id, task.session_id, task.branch_name, task.parent_task_id,
+                    task.cluster_key, task.progress_current, task.progress_total, task.version,
+                    task.created_at, task.updated_at,
                 ),
             )
+
+    def load_sessions(self) -> list[AgentSession]:
+        rows = self.connection.execute(
+            """SELECT id, agent_id, branch_name, status, control_capabilities, started_at,
+                      last_heartbeat_at, completed_at, error
+                 FROM agent_sessions ORDER BY started_at, rowid"""
+        ).fetchall()
+        return [AgentSession(
+            id=row["id"], agent_id=row["agent_id"], branch_name=row["branch_name"],
+            status=row["status"],
+            control_capabilities=tuple(json.loads(row["control_capabilities"])),
+            started_at=row["started_at"], last_heartbeat_at=row["last_heartbeat_at"],
+            completed_at=row["completed_at"], error=row["error"],
+        ) for row in rows]
+
+    def save_session(self, session: AgentSession) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        session.started_at = session.started_at or now
+        session.last_heartbeat_at = session.last_heartbeat_at or now
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO agent_sessions
+                   (id, agent_id, branch_name, status, control_capabilities, started_at,
+                    last_heartbeat_at, completed_at, error, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')
+                   ON CONFLICT(id) DO UPDATE SET agent_id=excluded.agent_id,
+                    branch_name=excluded.branch_name, status=excluded.status,
+                    control_capabilities=excluded.control_capabilities,
+                    last_heartbeat_at=excluded.last_heartbeat_at,
+                    completed_at=excluded.completed_at, error=excluded.error""",
+                (session.id, session.agent_id, session.branch_name, session.status,
+                 json.dumps(session.control_capabilities), session.started_at,
+                 session.last_heartbeat_at, session.completed_at, session.error),
+            )
+
+    def load_worklogs(self) -> list[TaskWorklog]:
+        rows = self.connection.execute(
+            """SELECT id, task_id, agent_id, session_id, kind, message, progress_current,
+                      progress_total, trace_id, created_at
+                 FROM task_worklogs ORDER BY created_at, rowid"""
+        ).fetchall()
+        return [TaskWorklog(
+            id=row["id"], task_id=row["task_id"], agent_id=row["agent_id"],
+            session_id=row["session_id"], kind=row["kind"], message=row["message"],
+            progress_current=row["progress_current"], progress_total=row["progress_total"],
+            trace_id=row["trace_id"], created_at=row["created_at"],
+        ) for row in rows]
+
+    def save_worklog(self, worklog: TaskWorklog) -> None:
+        worklog.created_at = worklog.created_at or datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO task_worklogs
+                   (id, task_id, agent_id, session_id, kind, message, progress_current,
+                    progress_total, trace_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id,
+                    agent_id=excluded.agent_id, session_id=excluded.session_id,
+                    kind=excluded.kind, message=excluded.message,
+                    progress_current=excluded.progress_current,
+                    progress_total=excluded.progress_total, trace_id=excluded.trace_id,
+                    created_at=excluded.created_at""",
+                (worklog.id, worklog.task_id, worklog.agent_id, worklog.session_id,
+                 worklog.kind, worklog.message, worklog.progress_current,
+                 worklog.progress_total, worklog.trace_id, worklog.created_at),
+            )
+
+    def load_traces(self) -> list[ExecutionTrace]:
+        rows = self.connection.execute(
+            """SELECT id, task_id, worklog_id, command_executed, stdout_preview,
+                      stderr_preview, exit_code, truncated, started_at, completed_at,
+                      content_sha256 FROM execution_traces ORDER BY rowid"""
+        ).fetchall()
+        return [ExecutionTrace(
+            id=row["id"], task_id=row["task_id"], worklog_id=row["worklog_id"],
+            command_executed=row["command_executed"], stdout_preview=row["stdout_preview"],
+            stderr_preview=row["stderr_preview"], exit_code=row["exit_code"],
+            truncated=bool(row["truncated"]), started_at=row["started_at"],
+            completed_at=row["completed_at"], content_sha256=row["content_sha256"],
+        ) for row in rows]
+
+    def save_trace(self, trace: ExecutionTrace) -> None:
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO execution_traces
+                   (id, task_id, worklog_id, command_executed, stdout_preview, stderr_preview,
+                    exit_code, truncated, started_at, completed_at, content_sha256)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id,
+                    worklog_id=excluded.worklog_id, command_executed=excluded.command_executed,
+                    stdout_preview=excluded.stdout_preview, stderr_preview=excluded.stderr_preview,
+                    exit_code=excluded.exit_code, truncated=excluded.truncated,
+                    started_at=excluded.started_at, completed_at=excluded.completed_at,
+                    content_sha256=excluded.content_sha256""",
+                (trace.id, trace.task_id, trace.worklog_id, trace.command_executed,
+                 trace.stdout_preview, trace.stderr_preview, trace.exit_code,
+                 int(trace.truncated), trace.started_at, trace.completed_at,
+                 trace.content_sha256),
+            )
+
+    def load_ingestion_event(self, idempotency_key: str) -> IngestionEvent | None:
+        row = self.connection.execute(
+            """SELECT id, idempotency_key, source, operation, agent_id, session_id,
+                      raw_payload, disposition, task_id, cluster_id, received_at,
+                      processed_at, error FROM ingestion_events WHERE idempotency_key = ?""",
+            (idempotency_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return IngestionEvent(
+            id=row["id"], idempotency_key=row["idempotency_key"], source=row["source"],
+            operation=row["operation"], agent_id=row["agent_id"], session_id=row["session_id"],
+            raw_payload=row["raw_payload"], disposition=row["disposition"],
+            task_id=row["task_id"], cluster_id=row["cluster_id"],
+            received_at=row["received_at"], processed_at=row["processed_at"], error=row["error"],
+        )
+
+    def save_ingestion_event(self, event: IngestionEvent) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        event.received_at = event.received_at or now
+        event.processed_at = event.processed_at or now
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO ingestion_events
+                   (id, idempotency_key, source, operation, agent_id, session_id, raw_payload,
+                    disposition, task_id, cluster_id, received_at, processed_at, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (event.id, event.idempotency_key, event.source, event.operation,
+                 event.agent_id, event.session_id, event.raw_payload, event.disposition,
+                 event.task_id, event.cluster_id, event.received_at, event.processed_at,
+                 event.error),
+            )
+
+    def save_task_link(
+        self, task_id: str, kind: str, *, url: str | None = None,
+        git_sha: str | None = None, provider: str | None = None, label: str | None = None,
+    ) -> None:
+        with self.connection:
+            existing = self.connection.execute(
+                """SELECT id FROM task_links
+                   WHERE task_id = ? AND kind = ? AND COALESCE(url, '') = ?
+                         AND COALESCE(git_sha, '') = ?""",
+                (task_id, kind, url or "", git_sha or ""),
+            ).fetchone()
+            if existing:
+                return
+            self.connection.execute(
+                """INSERT OR IGNORE INTO task_links
+                   (id, task_id, kind, provider, label, url, git_sha, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), task_id, kind, provider, label, url, git_sha,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+
+    def load_task_links(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """SELECT id, kind, provider, label, url, git_sha, created_at
+                 FROM task_links WHERE task_id = ? ORDER BY created_at, rowid""",
+            (task_id,),
+        ).fetchall()
+        return [{
+            "id": row["id"], "kind": row["kind"], "provider": row["provider"],
+            "label": row["label"], "url": row["url"], "gitSha": row["git_sha"],
+            "createdAt": row["created_at"],
+        } for row in rows]
 
     def load_pending(self) -> list[PendingChange]:
         rows = self.connection.execute(
@@ -804,6 +1188,9 @@ class TaskloomEngine:
         "ruff", "tsc", "vitest",
     }
     MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
+    CONFIDENCE_THRESHOLD = 0.7
+    AGGREGATION_WINDOW_SECONDS = 30
+    SESSION_STATUSES = {"active", "waiting_for_human", "error_stuck", "idle", "completed"}
     MAX_WATCHED_FILES = 2_000
     WATCH_EXCLUDED_DIRECTORIES = {
         ".git", ".taskloom", ".venv", "__pycache__", "dist", "node_modules", "target",
@@ -815,6 +1202,9 @@ class TaskloomEngine:
         self.state = StateStore(self.workspace / ".taskloom" / "taskloom.db")
         self.llm = llm or LLMClient()
         self.tasks = {task.id: task for task in self.state.load_tasks()}
+        self.sessions = {session.id: session for session in self.state.load_sessions()}
+        self.worklogs = {worklog.id: worklog for worklog in self.state.load_worklogs()}
+        self.traces = {trace.id: trace for trace in self.state.load_traces()}
         self.pending = {change.request_id: change for change in self.state.load_pending()}
         self.agents = {agent.id: agent for agent in self.state.load_agents()}
         self.workflows = {workflow.id: workflow for workflow in self.state.load_workflows()}
@@ -909,25 +1299,78 @@ class TaskloomEngine:
                 run.error = "Recovered after Taskloom restarted; resume when ready."
             self.state.save_workflow_run(run)
 
-    def update_task(self, task_id: str, status: str, **changes: Any) -> Task:
+    def update_task(
+        self, task_id: str, status: str, *, expected_version: int | None = None,
+        **changes: Any,
+    ) -> Task:
         task = self.tasks.get(task_id)
         if task is None:
             raise ProtocolError("task_not_found", f"Task '{task_id}' does not exist")
-        allowed = {"backlog", "active", "needs_approval", "completed", "failed"}
+        if expected_version is not None and expected_version != task.version:
+            raise ProtocolError(
+                "version_conflict",
+                f"Task '{task_id}' changed (expected version {expected_version}, found {task.version})",
+            )
+        allowed = {
+            "draft", "backlog", "active", "blocked", "needs_approval", "completed",
+            "failed", "cancelled",
+        }
         if status not in allowed:
             raise ProtocolError("invalid_status", f"Unsupported task status: {status}")
         task.status = status
         for key, value in changes.items():
             if hasattr(task, key):
                 setattr(task, key, value)
+        task.version += 1
         self.state.save_task(task)
         return task
 
-    @staticmethod
-    def serialize_task(task: Task) -> dict[str, Any]:
+    def serialize_task(self, task: Task) -> dict[str, Any]:
         return {
             "id": task.id, "title": task.title, "prompt": task.prompt, "status": task.status,
             "filePath": task.file_path, "provider": task.provider, "error": task.error,
+            "source": task.source, "governanceState": task.governance_state,
+            "confidenceScore": task.confidence_score, "agentId": task.agent_id,
+            "sessionId": task.session_id, "branchName": task.branch_name,
+            "parentTaskId": task.parent_task_id, "clusterKey": task.cluster_key,
+            "progressCurrent": task.progress_current, "progressTotal": task.progress_total,
+            "version": task.version, "createdAt": task.created_at, "updatedAt": task.updated_at,
+            "links": self.state.load_task_links(task.id),
+            "worklogs": [
+                self.serialize_worklog(worklog) for worklog in self.worklogs.values()
+                if worklog.task_id == task.id
+            ],
+        }
+
+    @staticmethod
+    def serialize_session(session: AgentSession) -> dict[str, Any]:
+        return {
+            "id": session.id, "agentId": session.agent_id, "status": session.status,
+            "branchName": session.branch_name,
+            "controlCapabilities": list(session.control_capabilities),
+            "startedAt": session.started_at, "lastHeartbeatAt": session.last_heartbeat_at,
+            "completedAt": session.completed_at, "error": session.error,
+        }
+
+    def serialize_worklog(self, worklog: TaskWorklog) -> dict[str, Any]:
+        trace = self.traces.get(worklog.trace_id or "")
+        return {
+            "id": worklog.id, "taskId": worklog.task_id, "message": worklog.message,
+            "kind": worklog.kind, "agentId": worklog.agent_id,
+            "sessionId": worklog.session_id, "progressCurrent": worklog.progress_current,
+            "progressTotal": worklog.progress_total, "traceId": worklog.trace_id,
+            "createdAt": worklog.created_at,
+            "trace": self.serialize_trace(trace) if trace else None,
+        }
+
+    @staticmethod
+    def serialize_trace(trace: ExecutionTrace) -> dict[str, Any]:
+        return {
+            "id": trace.id, "taskId": trace.task_id, "worklogId": trace.worklog_id,
+            "commandExecuted": trace.command_executed, "stdout": trace.stdout_preview,
+            "stderr": trace.stderr_preview, "exitCode": trace.exit_code,
+            "truncated": trace.truncated, "startedAt": trace.started_at,
+            "completedAt": trace.completed_at, "contentSha256": trace.content_sha256,
         }
 
     @staticmethod
@@ -1023,6 +1466,7 @@ class TaskloomEngine:
     def state_payload(self) -> dict[str, Any]:
         return {
             "tasks": [self.serialize_task(task) for task in self.tasks.values()],
+            "sessions": [self.serialize_session(session) for session in self.sessions.values()],
             "approvals": [self.serialize_change(change) for change in self.pending.values()],
             "agents": [self.serialize_agent(agent) for agent in self.agents.values()],
             "workflows": [
@@ -1466,6 +1910,269 @@ class TaskloomEngine:
             self._record_event(run.id, "step_failed", run.error, step.id)
             return False
 
+    @staticmethod
+    def _confidence(value: Any) -> float:
+        try:
+            score = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ProtocolError("invalid_confidence", "confidenceScore must be a number") from exc
+        if not 0.0 <= score <= 1.0:
+            raise ProtocolError("invalid_confidence", "confidenceScore must be between 0.0 and 1.0")
+        return score
+
+    @staticmethod
+    def _cluster_key(payload: dict[str, Any]) -> str:
+        explicit = str(payload.get("correlationKey") or "").strip()
+        if explicit:
+            return explicit
+        title = " ".join(str(payload.get("title") or "untitled").lower().split())
+        target = str(payload.get("filePath") or "")
+        directory = str(Path(target).parent) if target else "."
+        return "|".join((
+            str(payload.get("agentId") or "unknown"),
+            str(payload.get("sessionId") or "unknown"),
+            str(payload.get("branchName") or ""), directory, title,
+        ))
+
+    def _touch_session(self, payload: dict[str, Any]) -> AgentSession:
+        self._require(payload, "agentId", "sessionId")
+        session_id = str(payload["sessionId"])
+        status = str(payload.get("agentStatus") or "active").lower()
+        if status not in self.SESSION_STATUSES:
+            raise ProtocolError("invalid_agent_status", f"Unsupported agent status: {status}")
+        now = datetime.now(timezone.utc).isoformat()
+        session = self.sessions.get(session_id) or AgentSession(
+            id=session_id, agent_id=str(payload["agentId"]), started_at=now,
+        )
+        if session.agent_id != str(payload["agentId"]):
+            raise ProtocolError("session_agent_mismatch", "sessionId is already owned by another agent")
+        session.status = status
+        session.branch_name = str(payload["branchName"]) if payload.get("branchName") else session.branch_name
+        session.last_heartbeat_at = now
+        session.error = str(payload["agentError"]) if payload.get("agentError") else None
+        capabilities = payload.get("controlCapabilities")
+        if capabilities is not None:
+            if not isinstance(capabilities, list):
+                raise ProtocolError("invalid_capabilities", "controlCapabilities must be a list")
+            session.control_capabilities = tuple(str(item) for item in capabilities)
+        self.sessions[session.id] = session
+        self.state.save_session(session)
+        return session
+
+    def _duplicate_ingestion(self, payload: dict[str, Any]) -> IngestionEvent | None:
+        self._require(payload, "idempotencyKey")
+        return self.state.load_ingestion_event(str(payload["idempotencyKey"]))
+
+    def _save_ingestion(
+        self, payload: dict[str, Any], operation: str, disposition: str, task_id: str,
+        cluster_id: str | None = None,
+    ) -> None:
+        self.state.save_ingestion_event(IngestionEvent(
+            id=str(uuid.uuid4()), idempotency_key=str(payload["idempotencyKey"]),
+            source=str(payload.get("source") or "mcp"), operation=operation,
+            disposition=disposition,
+            raw_payload=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            agent_id=str(payload.get("agentId") or "") or None,
+            session_id=str(payload.get("sessionId") or "") or None,
+            task_id=task_id, cluster_id=cluster_id,
+        ))
+
+    def _duplicate_response(self, event: IngestionEvent) -> dict[str, Any]:
+        task = self.tasks.get(event.task_id or "")
+        if task is None:
+            raise ProtocolError("duplicate_target_missing", "The original idempotent result is unavailable")
+        return {"task": self.serialize_task(task), "disposition": "duplicate",
+                "originalDisposition": event.disposition}
+
+    def _add_links(self, task_id: str, payload: dict[str, Any]) -> None:
+        if payload.get("gitSha"):
+            self.state.save_task_link(
+                task_id, "commit", git_sha=str(payload["gitSha"]), provider="git",
+                label=str(payload["gitSha"])[:8],
+            )
+        if payload.get("prUrl"):
+            self.state.save_task_link(
+                task_id, "pull_request", url=str(payload["prUrl"]), provider="github",
+                label="Pull request",
+            )
+
+    def ingest_create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require(
+            payload, "title", "prompt", "agentId", "sessionId", "confidenceScore",
+            "idempotencyKey",
+        )
+        duplicate = self._duplicate_ingestion(payload)
+        if duplicate:
+            return self._duplicate_response(duplicate)
+        requested_task_id = str(payload["taskId"]) if payload.get("taskId") else None
+        if requested_task_id and requested_task_id in self.tasks:
+            raise ProtocolError("duplicate_task_id", f"Task '{requested_task_id}' already exists")
+        session = self._touch_session(payload)
+        score = self._confidence(payload["confidenceScore"])
+        file_path = str(payload["filePath"]) if payload.get("filePath") else None
+        if file_path:
+            self.snapshots.resolve_path(file_path)
+        cluster_key = self._cluster_key(payload)
+        now = datetime.now(timezone.utc)
+        if score >= self.CONFIDENCE_THRESHOLD:
+            for task in reversed(tuple(self.tasks.values())):
+                if (task.cluster_key == cluster_key and task.governance_state == "accepted"
+                        and task.status not in {"completed", "cancelled", "failed"}
+                        and task.created_at):
+                    created = datetime.fromisoformat(task.created_at)
+                    if now - created <= timedelta(seconds=self.AGGREGATION_WINDOW_SECONDS):
+                        task.progress_total = max(task.progress_total, 1) + 1
+                        if str(payload.get("status") or "") == "completed":
+                            task.progress_current += 1
+                        task.version += 1
+                        self.state.save_task(task)
+                        worklog = TaskWorklog(
+                            id=str(uuid.uuid4()), task_id=task.id,
+                            message=str(payload.get("summary") or payload["prompt"]),
+                            kind="clustered_update", agent_id=session.agent_id,
+                            session_id=session.id, progress_current=task.progress_current,
+                            progress_total=task.progress_total,
+                        )
+                        self.worklogs[worklog.id] = worklog
+                        self.state.save_worklog(worklog)
+                        self._add_links(task.id, payload)
+                        self._save_ingestion(payload, "create_task", "clustered", task.id, task.id)
+                        return {"task": self.serialize_task(task), "disposition": "clustered",
+                                "governanceReason": "Aggregated into recent related work"}
+        accepted = score >= self.CONFIDENCE_THRESHOLD
+        task = Task(
+            id=requested_task_id or str(uuid.uuid4()), title=str(payload["title"]),
+            prompt=str(payload["prompt"]), status=(str(payload.get("status") or "backlog") if accepted else "draft"),
+            file_path=file_path, provider=str(payload.get("provider") or "ollama"),
+            source=str(payload.get("source") or "mcp"),
+            governance_state="accepted" if accepted else "pending_review",
+            confidence_score=score, agent_id=session.agent_id, session_id=session.id,
+            branch_name=session.branch_name, parent_task_id=str(payload["parentTaskId"]) if payload.get("parentTaskId") else None,
+            cluster_key=cluster_key, progress_current=1 if payload.get("status") == "completed" else 0,
+            progress_total=1,
+        )
+        if task.status not in {
+            "draft", "backlog", "active", "blocked", "needs_approval", "completed",
+            "failed", "cancelled",
+        }:
+            raise ProtocolError("invalid_status", f"Unsupported task status: {task.status}")
+        self.tasks[task.id] = task
+        self.state.save_task(task)
+        self._add_links(task.id, payload)
+        disposition = "created" if accepted else "drafted"
+        self._save_ingestion(payload, "create_task", disposition, task.id)
+        reason = "Confidence threshold met" if accepted else "Confidence below 0.70; human review required"
+        return {"task": self.serialize_task(task), "disposition": disposition,
+                "governanceReason": reason}
+
+    def ingest_update_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require(payload, "taskId", "agentId", "sessionId", "idempotencyKey")
+        duplicate = self._duplicate_ingestion(payload)
+        if duplicate:
+            return self._duplicate_response(duplicate)
+        self._touch_session(payload)
+        task_id = str(payload["taskId"])
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise ProtocolError("task_not_found", f"Task '{task_id}' does not exist")
+        progress_current = int(payload.get("progressCurrent", task.progress_current))
+        progress_total = int(payload.get("progressTotal", task.progress_total))
+        if progress_current < 0 or progress_total < 0 or progress_current > progress_total:
+            raise ProtocolError("invalid_progress", "Progress must satisfy 0 <= current <= total")
+        status = str(payload.get("status") or task.status)
+        expected = int(payload["expectedVersion"]) if payload.get("expectedVersion") is not None else None
+        task = self.update_task(
+            task_id, status, expected_version=expected, progress_current=progress_current,
+            progress_total=progress_total, error=str(payload["error"]) if payload.get("error") else None,
+        )
+        summary = str(payload.get("summary") or f"Task moved to {status}")
+        worklog = TaskWorklog(
+            id=str(uuid.uuid4()), task_id=task.id, message=summary, kind="state_change",
+            agent_id=str(payload["agentId"]), session_id=str(payload["sessionId"]),
+            progress_current=progress_current, progress_total=progress_total,
+        )
+        self.worklogs[worklog.id] = worklog
+        self.state.save_worklog(worklog)
+        self._add_links(task.id, payload)
+        self._save_ingestion(payload, "update_task", "updated", task.id)
+        return {"task": self.serialize_task(task), "disposition": "updated"}
+
+    @staticmethod
+    def _redact_trace(value: str) -> str:
+        patterns = (
+            r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+",
+            r"(?i)((?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s]+",
+        )
+        for pattern in patterns:
+            value = re.sub(pattern, r"\1[REDACTED]", value)
+        return value
+
+    def _bounded_trace(self, value: Any) -> tuple[str, bool]:
+        redacted = self._redact_trace(str(value or ""))
+        encoded = redacted.encode("utf-8")
+        if len(encoded) <= self.MAX_COMMAND_OUTPUT_BYTES:
+            return redacted, False
+        return encoded[:self.MAX_COMMAND_OUTPUT_BYTES].decode("utf-8", errors="ignore"), True
+
+    def ingest_add_log(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require(payload, "taskId", "agentId", "sessionId", "message", "idempotencyKey")
+        duplicate = self._duplicate_ingestion(payload)
+        if duplicate:
+            result = self._duplicate_response(duplicate)
+            result["worklog"] = None
+            return result
+        self._touch_session(payload)
+        task_id = str(payload["taskId"])
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise ProtocolError("task_not_found", f"Task '{task_id}' does not exist")
+        proposed_current = (
+            int(payload["progressCurrent"]) if payload.get("progressCurrent") is not None
+            else task.progress_current
+        )
+        proposed_total = (
+            int(payload["progressTotal"]) if payload.get("progressTotal") is not None
+            else task.progress_total
+        )
+        if proposed_current < 0 or proposed_total < 0 or proposed_current > proposed_total:
+            raise ProtocolError("invalid_progress", "Progress must satisfy 0 <= current <= total")
+        worklog = TaskWorklog(
+            id=str(uuid.uuid4()), task_id=task_id, message=str(payload["message"]),
+            kind=str(payload.get("kind") or "progress"), agent_id=str(payload["agentId"]),
+            session_id=str(payload["sessionId"]),
+            progress_current=int(payload["progressCurrent"]) if payload.get("progressCurrent") is not None else None,
+            progress_total=int(payload["progressTotal"]) if payload.get("progressTotal") is not None else None,
+        )
+        self.worklogs[worklog.id] = worklog
+        self.state.save_worklog(worklog)
+        trace = None
+        if any(key in payload for key in ("commandExecuted", "stdout", "stderr", "exitCode")):
+            stdout, stdout_truncated = self._bounded_trace(payload.get("stdout"))
+            stderr, stderr_truncated = self._bounded_trace(payload.get("stderr"))
+            digest = hashlib.sha256(f"{stdout}\0{stderr}".encode("utf-8")).hexdigest()
+            trace = ExecutionTrace(
+                id=str(uuid.uuid4()), task_id=task_id, worklog_id=worklog.id,
+                command_executed=self._redact_trace(str(payload.get("commandExecuted") or "")),
+                stdout_preview=stdout, stderr_preview=stderr,
+                exit_code=int(payload["exitCode"]) if payload.get("exitCode") is not None else None,
+                truncated=stdout_truncated or stderr_truncated,
+                started_at=str(payload["startedAt"]) if payload.get("startedAt") else None,
+                completed_at=str(payload["completedAt"]) if payload.get("completedAt") else None,
+                content_sha256=digest,
+            )
+            self.traces[trace.id] = trace
+            self.state.save_trace(trace)
+            worklog.trace_id = trace.id
+            self.state.save_worklog(worklog)
+        if worklog.progress_current is not None or worklog.progress_total is not None:
+            self.update_task(
+                task_id, task.status, progress_current=proposed_current,
+                progress_total=proposed_total,
+            )
+        self._save_ingestion(payload, "add_log", "logged", task_id)
+        return {"task": self.serialize_task(task), "worklog": self.serialize_worklog(worklog),
+                "disposition": "logged"}
+
     async def handle(self, message: dict[str, Any]) -> list[dict[str, Any]]:
         request_id = message.get("id")
         kind = message["type"]
@@ -1475,6 +2182,18 @@ class TaskloomEngine:
         if kind in {"list_tasks", "list_state"}:
             response_type = "task_list" if kind == "list_tasks" else "state_snapshot"
             return [self._response(request_id, response_type, self.state_payload())]
+        if kind == "ingest_create_task":
+            return [self._response(
+                request_id, "governed_task_ingested", self.ingest_create_task(payload),
+            )]
+        if kind == "ingest_update_task":
+            return [self._response(
+                request_id, "governed_task_updated", self.ingest_update_task(payload),
+            )]
+        if kind == "ingest_add_log":
+            return [self._response(
+                request_id, "governed_log_ingested", self.ingest_add_log(payload),
+            )]
         if kind == "create_task":
             self._require(payload, "title", "prompt", "filePath")
             task = Task(
