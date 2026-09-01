@@ -16,8 +16,9 @@ const bridge = {
   workflows: [{
     id: "delivery", name: "Safe delivery", description: "Plan and implement", approvalMode: "approve_plan", enabled: true, archived: false,
     steps: [
-      { id: "plan", name: "Plan", agentId: "planner", kind: "analysis", instruction: "Plan", dependsOn: [] },
-      { id: "build", name: "Build", agentId: "builder", kind: "file_edit", instruction: "Build", dependsOn: ["plan"] },
+      { id: "plan", name: "Plan", agentId: "planner", kind: "analysis", instruction: "Plan", dependsOn: [], command: [], timeoutSeconds: 120 },
+      { id: "build", name: "Build", agentId: "builder", kind: "file_edit", instruction: "Build", dependsOn: ["plan"], command: [], timeoutSeconds: 120 },
+      { id: "validate", name: "Validate", agentId: "builder", kind: "validate", instruction: "Validate", dependsOn: ["build"], command: [], timeoutSeconds: 120 },
     ],
   }],
   workflowRuns: [],
@@ -59,5 +60,48 @@ describe("AutomationDashboard", () => {
       workflowId: "delivery", intervalMinutes: 60, goal: "Refresh the project report",
       targetFile: "scratch/report.md", enabled: true,
     }));
+  });
+
+  it("configures a validation command without shell parsing", async () => {
+    const user = userEvent.setup();
+    render(<AutomationDashboard bridge={bridge} />);
+
+    await user.click(screen.getByRole("button", { name: /edit/i }));
+    const command = screen.getByLabelText(/validation command for validate/i);
+    const timeout = screen.getByLabelText(/timeout for validate/i);
+    await user.type(command, "npm\ntest\n--\n--runInBand");
+    await user.clear(timeout);
+    await user.type(timeout, "240");
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    expect(bridge.updateWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      steps: expect.arrayContaining([
+        expect.objectContaining({
+          id: "validate", command: ["npm", "test", "--", "--runInBand"],
+          timeoutSeconds: 240,
+        }),
+      ]),
+    }));
+  });
+
+  it("shows captured validation output in durable run history", () => {
+    const bridgeWithRun = {
+      ...bridge,
+      workflowRuns: [{
+        id: "run-1", workflowId: "delivery", goal: "Validate release",
+        targetFile: "README.md", status: "completed", planApproved: true,
+        steps: [{
+          id: "run-1:validate", workflowRunId: "run-1", stepId: "validate",
+          agentId: "builder", name: "Validate", kind: "validate", status: "completed",
+          output: "7 tests passed\n",
+        }],
+        events: [],
+      }],
+    } as unknown as AgentBridge;
+
+    render(<AutomationDashboard bridge={bridgeWithRun} />);
+
+    expect(screen.getByText(/validation output · validate/i)).toBeInTheDocument();
+    expect(screen.getByText(/7 tests passed/i)).toBeInTheDocument();
   });
 });

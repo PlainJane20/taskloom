@@ -43,6 +43,8 @@ export interface WorkflowStep {
   kind: AgentCapability;
   instruction: string;
   dependsOn: string[];
+  command: string[];
+  timeoutSeconds: number;
 }
 
 export interface Workflow {

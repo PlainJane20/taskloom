@@ -50,9 +50,10 @@ function WorkflowCard({ workflow, bridge, onRun, onEdit, onSchedule, perform }: 
           const agent = bridge.agents.find((candidate) => candidate.id === step.agentId);
           return <div key={step.id} className="flex shrink-0 items-center">
             {index > 0 && <div className="mx-2 h-px w-5 bg-slate-700" />}
-            <div className="rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2">
+          <div className="rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2">
               <p className="text-xs font-semibold text-slate-200">{step.name}</p>
               <p className="text-[10px] text-slate-500">{agent?.name ?? "Unknown agent"}</p>
+              {step.command?.length > 0 && <p className="mt-1 max-w-52 truncate font-mono text-[9px] text-amber-300" title={step.command.join(" ")}>{step.command.join(" ")}</p>}
             </div>
           </div>;
         })}
@@ -118,20 +119,29 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
           approvalMode: String(data.get("approvalMode")) as ApprovalMode,
           steps: editTarget.steps.map((step) => ({
             ...step, agentId: String(data.get(`agent-${step.id}`)),
+            command: step.kind === "validate"
+              ? String(data.get(`command-${step.id}`) ?? "").split("\n").map((item) => item.trim()).filter(Boolean)
+              : [],
+            timeoutSeconds: step.kind === "validate"
+              ? Number(data.get(`timeout-${step.id}`) ?? 120)
+              : 120,
           })),
         });
       } else {
         const planner = String(data.get("planner"));
         const builder = String(data.get("builder"));
         const reviewer = String(data.get("reviewer"));
+        const validationCommand = String(data.get("validationCommand") ?? "")
+          .split("\n").map((item) => item.trim()).filter(Boolean);
+        const validationTimeout = Number(data.get("validationTimeout") ?? 120);
         await bridge.createWorkflow({
           name: String(data.get("name")), description: String(data.get("description")),
           approvalMode: String(data.get("approvalMode")) as ApprovalMode,
           steps: [
-            { id: "plan", name: "Plan", agentId: planner, kind: "analysis", instruction: "Create a concise execution plan.", dependsOn: [] },
-            { id: "implement", name: "Implement", agentId: builder, kind: "file_edit", instruction: "Implement the goal in the target file.", dependsOn: ["plan"] },
-            { id: "validate", name: "Validate", agentId: reviewer, kind: "validate", instruction: "Verify the target file exists and is not empty.", dependsOn: ["implement"] },
-            { id: "review", name: "Review", agentId: reviewer, kind: "analysis", instruction: "Review the result and summarize remaining risks.", dependsOn: ["validate"] },
+            { id: "plan", name: "Plan", agentId: planner, kind: "analysis", instruction: "Create a concise execution plan.", dependsOn: [], command: [], timeoutSeconds: 120 },
+            { id: "implement", name: "Implement", agentId: builder, kind: "file_edit", instruction: "Implement the goal in the target file.", dependsOn: ["plan"], command: [], timeoutSeconds: 120 },
+            { id: "validate", name: "Validate", agentId: reviewer, kind: "validate", instruction: "Run the configured validation command, or verify the target file when no command is configured.", dependsOn: ["implement"], command: validationCommand, timeoutSeconds: validationTimeout },
+            { id: "review", name: "Review", agentId: reviewer, kind: "analysis", instruction: "Review the result and summarize remaining risks.", dependsOn: ["validate"], command: [], timeoutSeconds: 120 },
           ],
         });
       }
@@ -246,6 +256,7 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
                 {run.status === "failed" && <button aria-label={`Retry ${workflow?.name ?? "workflow"}`} disabled={busy} onClick={() => void perform(() => bridge.retryWorkflow(run.id))} className="ml-auto flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-200"><RefreshCw size={13} /> Retry</button>}
               </div>
               {run.error && <p className="mt-2 text-xs text-rose-300">{run.error}</p>}
+              {run.steps.filter((step) => step.kind === "validate" && step.output).map((step) => <details key={`${step.id}-output`} className="mt-3 rounded-lg border border-slate-800 bg-slate-950/60 text-xs"><summary className="cursor-pointer px-3 py-2 font-semibold text-slate-300 hover:text-white">Validation output · {step.name}</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-slate-800 px-3 py-3 font-mono text-[11px] text-slate-400">{step.output}</pre></details>)}
               {run.events?.length > 0 && <details className="mt-3 text-xs text-slate-500"><summary className="cursor-pointer hover:text-slate-300">{run.events.length} execution events</summary><ol className="mt-2 space-y-1 border-l border-slate-700 pl-3">{run.events.slice(-8).map((event) => <li key={event.id}><span className="text-slate-300">{event.message}</span> · {new Date(event.createdAt).toLocaleTimeString()}</li>)}</ol></details>}
             </article>;
           })}
@@ -290,7 +301,7 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
           <label className="block text-sm">Name<input required name="name" defaultValue={editTarget?.name} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Documentation delivery" /></label>
           <label className="block text-sm">Description<input required name="description" defaultValue={editTarget?.description} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Plan, implement, validate, and review documentation." /></label>
           <label className="block text-sm">Automation policy<select name="approvalMode" defaultValue={editTarget?.approvalMode ?? "approve_plan"} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{Object.entries(modeLabels).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}</select></label>
-          {editTarget ? editTarget.steps.map((step) => <label key={step.id} className="block text-sm">{step.name} agent<select required name={`agent-${step.id}`} defaultValue={step.agentId} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{bridge.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}</option>)}</select></label>) : (["planner", "builder", "reviewer"] as const).map((role) => <label key={role} className="block text-sm capitalize">{role}<select required name={role} defaultValue={bridge.agents.find((agent) => agent.id === role)?.id ?? bridge.agents[0]?.id} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{bridge.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}</option>)}</select></label>)}
+          {editTarget ? editTarget.steps.map((step) => <div key={step.id} className="space-y-3 rounded-lg border border-slate-800 p-3"><label className="block text-sm">{step.name} agent<select required name={`agent-${step.id}`} defaultValue={step.agentId} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{bridge.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}</option>)}</select></label>{step.kind === "validate" && <><label className="block text-sm">Validation command for {step.name}<textarea name={`command-${step.id}`} defaultValue={step.command?.join("\n")} rows={4} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs" placeholder={"npm\ntest"} /><span className="mt-1 block text-[11px] text-slate-500">One argument per line. Leave blank for the built-in file check.</span></label><label className="block text-sm">Timeout for {step.name} (seconds)<input required type="number" min="1" max="900" name={`timeout-${step.id}`} defaultValue={step.timeoutSeconds ?? 120} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" /></label></>}</div>) : <>{(["planner", "builder", "reviewer"] as const).map((role) => <label key={role} className="block text-sm capitalize">{role}<select required name={role} defaultValue={bridge.agents.find((agent) => agent.id === role)?.id ?? bridge.agents[0]?.id} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{bridge.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}</option>)}</select></label>)}<div className="space-y-3 rounded-lg border border-amber-900/50 bg-amber-950/10 p-3"><label className="block text-sm">Validation command<textarea name="validationCommand" rows={4} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs" placeholder={"npm\ntest"} /><span className="mt-1 block text-[11px] text-slate-500">Optional. Enter the executable and each argument on separate lines.</span></label><label className="block text-sm">Validation timeout (seconds)<input required type="number" min="1" max="900" name="validationTimeout" defaultValue="120" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" /></label></div></>}
           <button disabled={busy || bridge.agents.length === 0} className="w-full rounded-lg bg-violet-400 py-2 font-bold text-slate-950 disabled:opacity-50">{editTarget ? "Save changes" : "Create workflow"}</button>
         </form>
       </div>}
