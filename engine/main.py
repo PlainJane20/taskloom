@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fnmatch
 import json
 import os
 import shutil
@@ -142,6 +143,22 @@ class AutomationTrigger:
 
 
 @dataclass
+class FileTrigger:
+    id: str
+    workflow_id: str
+    name: str
+    watch_path: str
+    pattern: str
+    cooldown_seconds: int
+    goal: str
+    enabled: bool = True
+    baseline: dict[str, tuple[int, int]] | None = None
+    last_run_at: str | None = None
+    last_run_id: str | None = None
+    error: str | None = None
+
+
+@dataclass
 class ExecutionEvent:
     id: str
     workflow_run_id: str
@@ -262,6 +279,23 @@ class StateStore:
                 target_file TEXT NOT NULL,
                 enabled INTEGER NOT NULL,
                 next_run_at TEXT,
+                last_run_at TEXT,
+                last_run_id TEXT,
+                error TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workflow_id) REFERENCES workflows(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS file_triggers (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                watch_path TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                cooldown_seconds INTEGER NOT NULL,
+                goal TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                baseline TEXT NOT NULL,
                 last_run_at TEXT,
                 last_run_id TEXT,
                 error TEXT,
@@ -550,6 +584,50 @@ class StateStore:
         with self.connection:
             self.connection.execute("DELETE FROM automation_triggers WHERE id = ?", (trigger_id,))
 
+    def load_file_triggers(self) -> list[FileTrigger]:
+        rows = self.connection.execute(
+            """SELECT id, workflow_id, name, watch_path, pattern, cooldown_seconds, goal,
+                      enabled, baseline, last_run_at, last_run_id, error
+                 FROM file_triggers ORDER BY rowid"""
+        ).fetchall()
+        return [FileTrigger(
+            id=row["id"], workflow_id=row["workflow_id"], name=row["name"],
+            watch_path=row["watch_path"], pattern=row["pattern"],
+            cooldown_seconds=row["cooldown_seconds"], goal=row["goal"],
+            enabled=bool(row["enabled"]),
+            baseline={
+                path: (int(fingerprint[0]), int(fingerprint[1]))
+                for path, fingerprint in json.loads(row["baseline"]).items()
+            },
+            last_run_at=row["last_run_at"], last_run_id=row["last_run_id"],
+            error=row["error"],
+        ) for row in rows]
+
+    def save_file_trigger(self, trigger: FileTrigger) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO file_triggers
+                    (id, workflow_id, name, watch_path, pattern, cooldown_seconds, goal,
+                     enabled, baseline, last_run_at, last_run_id, error, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET workflow_id=excluded.workflow_id,
+                    name=excluded.name, watch_path=excluded.watch_path,
+                    pattern=excluded.pattern, cooldown_seconds=excluded.cooldown_seconds,
+                    goal=excluded.goal, enabled=excluded.enabled, baseline=excluded.baseline,
+                    last_run_at=excluded.last_run_at, last_run_id=excluded.last_run_id,
+                    error=excluded.error, updated_at=excluded.updated_at
+                """,
+                (trigger.id, trigger.workflow_id, trigger.name, trigger.watch_path,
+                 trigger.pattern, trigger.cooldown_seconds, trigger.goal, int(trigger.enabled),
+                 json.dumps(trigger.baseline or {}, sort_keys=True), trigger.last_run_at,
+                 trigger.last_run_id, trigger.error, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def delete_file_trigger(self, trigger_id: str) -> None:
+        with self.connection:
+            self.connection.execute("DELETE FROM file_triggers WHERE id = ?", (trigger_id,))
+
     def load_events(self) -> list[ExecutionEvent]:
         rows = self.connection.execute(
             """SELECT id, workflow_run_id, step_run_id, event_type, message, created_at
@@ -726,6 +804,10 @@ class TaskloomEngine:
         "ruff", "tsc", "vitest",
     }
     MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
+    MAX_WATCHED_FILES = 2_000
+    WATCH_EXCLUDED_DIRECTORIES = {
+        ".git", ".taskloom", ".venv", "__pycache__", "dist", "node_modules", "target",
+    }
 
     def __init__(self, workspace: Path, llm: LLMClient | None = None) -> None:
         self.workspace = workspace.resolve()
@@ -742,6 +824,9 @@ class TaskloomEngine:
             approval.request_id: approval for approval in self.state.load_plan_approvals()
         }
         self.triggers = {trigger.id: trigger for trigger in self.state.load_triggers()}
+        self.file_triggers = {
+            trigger.id: trigger for trigger in self.state.load_file_triggers()
+        }
         self.events = self.state.load_events()
         self._run_lock = asyncio.Lock()
         self._seed_defaults()
@@ -910,6 +995,17 @@ class TaskloomEngine:
             "lastRunId": trigger.last_run_id, "error": trigger.error,
         }
 
+    @staticmethod
+    def serialize_file_trigger(trigger: FileTrigger) -> dict[str, Any]:
+        return {
+            "id": trigger.id, "workflowId": trigger.workflow_id, "name": trigger.name,
+            "watchPath": trigger.watch_path, "pattern": trigger.pattern,
+            "cooldownSeconds": trigger.cooldown_seconds, "goal": trigger.goal,
+            "enabled": trigger.enabled, "lastRunAt": trigger.last_run_at,
+            "lastRunId": trigger.last_run_id, "error": trigger.error,
+            "trackedFiles": len(trigger.baseline or {}),
+        }
+
     def serialize_plan_approval(self, approval: PlanApproval) -> dict[str, Any]:
         run = self.workflow_runs[approval.workflow_run_id]
         workflow = self.workflows[approval.workflow_id]
@@ -940,6 +1036,9 @@ class TaskloomEngine:
                 self.serialize_plan_approval(approval) for approval in self.plan_approvals.values()
             ],
             "triggers": [self.serialize_trigger(trigger) for trigger in self.triggers.values()],
+            "fileTriggers": [
+                self.serialize_file_trigger(trigger) for trigger in self.file_triggers.values()
+            ],
         }
 
     def _record_event(
@@ -1064,6 +1163,63 @@ class TaskloomEngine:
         self._record_event(run.id, "approval_required", "Workflow plan requires approval")
         return run, approval
 
+    @staticmethod
+    def _matches_watch_pattern(relative_path: str, pattern: str) -> bool:
+        normalized = relative_path.replace(os.sep, "/")
+        return fnmatch.fnmatchcase(normalized, pattern) or (
+            pattern.startswith("**/") and fnmatch.fnmatchcase(normalized, pattern[3:])
+        )
+
+    def _scan_file_trigger(self, trigger: FileTrigger) -> dict[str, tuple[int, int]]:
+        """Return lightweight metadata only; never read watched file contents."""
+        root = self.snapshots.resolve_path(trigger.watch_path)
+        candidates: list[Path] = []
+        if root.is_file() and not root.is_symlink():
+            candidates = [root]
+        elif root.is_dir():
+            for directory, names, files in os.walk(root, followlinks=False):
+                names[:] = sorted(
+                    name for name in names
+                    if name not in self.WATCH_EXCLUDED_DIRECTORIES
+                    and not (Path(directory) / name).is_symlink()
+                )
+                for name in sorted(files):
+                    candidate = Path(directory) / name
+                    if candidate.is_symlink():
+                        continue
+                    relative_to_watch = candidate.relative_to(root).as_posix()
+                    if self._matches_watch_pattern(relative_to_watch, trigger.pattern):
+                        candidates.append(candidate)
+                        if len(candidates) > self.MAX_WATCHED_FILES:
+                            raise ProtocolError(
+                                "watch_too_large",
+                                f"File watch exceeds the {self.MAX_WATCHED_FILES:,}-file safety limit",
+                            )
+        snapshot: dict[str, tuple[int, int]] = {}
+        for candidate in candidates:
+            stat = candidate.stat()
+            relative = candidate.relative_to(self.workspace).as_posix()
+            snapshot[relative] = (stat.st_mtime_ns, stat.st_size)
+        return snapshot
+
+    def _refresh_file_trigger_after_run(self, run: WorkflowRun) -> None:
+        """Accept the run's own write as the new baseline to prevent feedback loops."""
+        for trigger in self.file_triggers.values():
+            if trigger.last_run_id != run.id:
+                continue
+            try:
+                current = self._scan_file_trigger(trigger)
+                baseline = dict(trigger.baseline or {})
+                if run.target_file in current:
+                    baseline[run.target_file] = current[run.target_file]
+                else:
+                    baseline.pop(run.target_file, None)
+                trigger.baseline = baseline
+                trigger.error = None
+            except Exception as exc:
+                trigger.error = str(exc)
+            self.state.save_file_trigger(trigger)
+
     async def run_due_triggers(self, now: datetime | None = None) -> list[WorkflowRun]:
         """Run each due interval trigger at most once and advance its next deadline."""
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -1100,11 +1256,66 @@ class TaskloomEngine:
                 self.state.save_trigger(trigger)
         return started
 
+    async def run_due_file_triggers(self, now: datetime | None = None) -> list[WorkflowRun]:
+        """Run at most one changed file per watch while respecting its cooldown."""
+        current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        started: list[WorkflowRun] = []
+        for trigger in tuple(self.file_triggers.values()):
+            if not trigger.enabled:
+                continue
+            if trigger.last_run_at:
+                try:
+                    last_run = datetime.fromisoformat(trigger.last_run_at).astimezone(timezone.utc)
+                except ValueError:
+                    last_run = current_time - timedelta(seconds=trigger.cooldown_seconds)
+                if current_time < last_run + timedelta(seconds=trigger.cooldown_seconds):
+                    continue
+            try:
+                current = self._scan_file_trigger(trigger)
+                baseline = trigger.baseline or {}
+                changed = sorted(
+                    path for path, fingerprint in current.items()
+                    if baseline.get(path) != fingerprint
+                )
+                if not changed:
+                    if set(baseline) != set(current):
+                        trigger.baseline = current
+                        self.state.save_file_trigger(trigger)
+                    continue
+                changed_path = changed[0]
+                updated_baseline = dict(baseline)
+                updated_baseline[changed_path] = current[changed_path]
+                for deleted in set(updated_baseline) - set(current):
+                    updated_baseline.pop(deleted, None)
+                trigger.baseline = updated_baseline
+                trigger.last_run_at = current_time.isoformat()
+                trigger.error = None
+                workflow = self.workflows.get(trigger.workflow_id)
+                if workflow is None:
+                    raise ProtocolError("workflow_not_found", "Watched workflow no longer exists")
+                goal = trigger.goal.replace("{file}", changed_path)
+                run, _ = self._create_workflow_run(workflow, goal, changed_path)
+                trigger.last_run_id = run.id
+                self.state.save_file_trigger(trigger)
+                self._record_event(
+                    run.id, "triggered", f"Started by file watch: {trigger.name} ({changed_path})",
+                )
+                if run.status != "needs_approval":
+                    await self._execute_workflow(run)
+                started.append(run)
+            except Exception as exc:
+                trigger.error = str(exc)
+                self.state.save_file_trigger(trigger)
+        return started
+
     async def run_scheduler(self, emit: Any) -> None:
-        """Keep interval triggers active while the local desktop engine is running."""
+        """Keep interval and filesystem triggers active while the engine is running."""
         poll_seconds = max(5, int(os.environ.get("TASKLOOM_SCHEDULER_POLL_SECONDS", "15")))
         while True:
-            started = await self.run_due_triggers()
+            scheduled, watched = await asyncio.gather(
+                self.run_due_triggers(), self.run_due_file_triggers(),
+            )
+            started = [*scheduled, *watched]
             if started:
                 await emit({"type": "state_snapshot", "payload": self.state_payload()})
             await asyncio.sleep(poll_seconds)
@@ -1147,6 +1358,7 @@ class TaskloomEngine:
             run.completed_at = datetime.now(timezone.utc).isoformat()
             self.state.save_workflow_run(run)
             self._record_event(run.id, "run_completed", "Workflow completed successfully")
+            self._refresh_file_trigger_after_run(run)
 
     async def _execute_step(
         self, workflow: Workflow, run: WorkflowRun, definition: WorkflowStep, step: StepRun,
@@ -1411,6 +1623,10 @@ class TaskloomEngine:
                 if trigger.workflow_id == workflow.id:
                     trigger.enabled = False
                     self.state.save_trigger(trigger)
+            for trigger in self.file_triggers.values():
+                if trigger.workflow_id == workflow.id:
+                    trigger.enabled = False
+                    self.state.save_file_trigger(trigger)
             return [self._response(request_id, "workflow_archived", {"workflowId": workflow.id})]
         if kind == "run_workflow":
             self._require(payload, "workflowId", "goal", "targetFile")
@@ -1533,6 +1749,94 @@ class TaskloomEngine:
                 {"trigger": self.serialize_trigger(trigger),
                  "workflowRun": self.serialize_workflow_run(run)},
             ), {"type": "state_snapshot", "payload": self.state_payload()}]
+        if kind == "create_file_trigger":
+            self._require(
+                payload, "workflowId", "name", "watchPath", "pattern", "cooldownSeconds", "goal",
+            )
+            workflow = self.workflows.get(str(payload["workflowId"]))
+            if workflow is None or workflow.archived:
+                raise ProtocolError("workflow_not_found", "Workflow does not exist")
+            try:
+                cooldown = int(payload["cooldownSeconds"])
+            except (TypeError, ValueError) as exc:
+                raise ProtocolError("invalid_cooldown", "Cooldown must be a whole number") from exc
+            if cooldown < 15 or cooldown > 86_400:
+                raise ProtocolError("unsafe_cooldown", "Cooldown must be 15–86,400 seconds")
+            watch_path = str(payload["watchPath"])
+            pattern = str(payload["pattern"])
+            if len(pattern) > 128 or "\x00" in pattern:
+                raise ProtocolError("invalid_pattern", "File pattern is invalid or too long")
+            self.snapshots.resolve_path(watch_path)
+            trigger = FileTrigger(
+                id=str(payload.get("triggerId") or uuid.uuid4()), workflow_id=workflow.id,
+                name=str(payload["name"]), watch_path=watch_path, pattern=pattern,
+                cooldown_seconds=cooldown, goal=str(payload["goal"]),
+                enabled=bool(payload.get("enabled", True)),
+            )
+            trigger.baseline = self._scan_file_trigger(trigger)
+            self.file_triggers[trigger.id] = trigger
+            self.state.save_file_trigger(trigger)
+            return [self._response(
+                request_id, "file_trigger_created",
+                {"fileTrigger": self.serialize_file_trigger(trigger)},
+            )]
+        if kind == "update_file_trigger":
+            self._require(
+                payload, "triggerId", "name", "watchPath", "pattern", "cooldownSeconds", "goal",
+                "enabled",
+            )
+            trigger = self.file_triggers.get(str(payload["triggerId"]))
+            if trigger is None:
+                raise ProtocolError("trigger_not_found", "File watch does not exist")
+            try:
+                cooldown = int(payload["cooldownSeconds"])
+            except (TypeError, ValueError) as exc:
+                raise ProtocolError("invalid_cooldown", "Cooldown must be a whole number") from exc
+            if cooldown < 15 or cooldown > 86_400:
+                raise ProtocolError("unsafe_cooldown", "Cooldown must be 15–86,400 seconds")
+            watch_path = str(payload["watchPath"])
+            pattern = str(payload["pattern"])
+            if len(pattern) > 128 or "\x00" in pattern:
+                raise ProtocolError("invalid_pattern", "File pattern is invalid or too long")
+            self.snapshots.resolve_path(watch_path)
+            reset_baseline = watch_path != trigger.watch_path or pattern != trigger.pattern
+            trigger.name = str(payload["name"])
+            trigger.watch_path = watch_path
+            trigger.pattern = pattern
+            trigger.cooldown_seconds = cooldown
+            trigger.goal = str(payload["goal"])
+            trigger.enabled = bool(payload["enabled"])
+            trigger.error = None
+            if reset_baseline:
+                trigger.baseline = self._scan_file_trigger(trigger)
+            self.state.save_file_trigger(trigger)
+            return [self._response(
+                request_id, "file_trigger_updated",
+                {"fileTrigger": self.serialize_file_trigger(trigger)},
+            )]
+        if kind == "set_file_trigger_enabled":
+            self._require(payload, "triggerId", "enabled")
+            trigger = self.file_triggers.get(str(payload["triggerId"]))
+            if trigger is None:
+                raise ProtocolError("trigger_not_found", "File watch does not exist")
+            trigger.enabled = bool(payload["enabled"])
+            trigger.error = None
+            if trigger.enabled:
+                trigger.baseline = self._scan_file_trigger(trigger)
+            self.state.save_file_trigger(trigger)
+            return [self._response(
+                request_id, "file_trigger_updated",
+                {"fileTrigger": self.serialize_file_trigger(trigger)},
+            )]
+        if kind == "delete_file_trigger":
+            self._require(payload, "triggerId")
+            trigger = self.file_triggers.pop(str(payload["triggerId"]), None)
+            if trigger is None:
+                raise ProtocolError("trigger_not_found", "File watch does not exist")
+            self.state.delete_file_trigger(trigger.id)
+            return [self._response(
+                request_id, "file_trigger_deleted", {"triggerId": trigger.id},
+            )]
         if kind == "plan_approval_decision":
             self._require(payload, "requestId", "decision")
             if payload["decision"] not in {"approve", "reject"}:

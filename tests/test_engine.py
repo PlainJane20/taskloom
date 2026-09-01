@@ -543,6 +543,170 @@ async def test_run_now_executes_paused_schedule(tmp_path: Path) -> None:
     assert engine.triggers["paused"].enabled is False
 
 
+async def create_file_watch_workflow(
+    engine: TaskloomEngine, workflow_id: str = "watched", *,
+    approval_mode: str = "observe", kind: str = "analysis",
+) -> None:
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": workflow_id, "name": "Watched workflow",
+            "description": "Runs for changed files", "approvalMode": approval_mode,
+            "steps": [{
+                "id": "work", "name": "Work",
+                "agentId": "builder" if kind == "file_edit" else "planner",
+                "kind": kind, "instruction": "Handle the changed file", "dependsOn": [],
+            }],
+        },
+    })
+
+
+@pytest.mark.asyncio
+async def test_file_watch_baselines_then_runs_once_for_matching_change(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    watched = inbox / "note.md"
+    watched.write_text("baseline\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM("analyzed\n"))
+    await create_file_watch_workflow(engine)
+
+    created = await engine.handle({
+        "type": "create_file_trigger",
+        "payload": {
+            "triggerId": "markdown-watch", "workflowId": "watched", "name": "Markdown",
+            "watchPath": "inbox", "pattern": "**/*.md", "cooldownSeconds": 15,
+            "goal": "Review {file}",
+        },
+    })
+    assert created[0]["payload"]["fileTrigger"]["trackedFiles"] == 1
+    assert await engine.run_due_file_triggers() == []
+
+    watched.write_text("changed and larger\n", encoding="utf-8")
+    first = await engine.run_due_file_triggers()
+    second = await engine.run_due_file_triggers()
+
+    assert len(first) == 1
+    assert first[0].target_file == "inbox/note.md"
+    assert first[0].goal == "Review inbox/note.md"
+    assert first[0].status == "completed"
+    assert second == []
+    assert engine.file_triggers["markdown-watch"].last_run_id == first[0].id
+
+
+@pytest.mark.asyncio
+async def test_file_watch_ignores_nonmatching_and_generated_directories(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    generated = inbox / "node_modules" / "package"
+    generated.mkdir(parents=True)
+    inbox.joinpath("note.txt").write_text("before\n", encoding="utf-8")
+    generated.joinpath("generated.md").write_text("before\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await create_file_watch_workflow(engine)
+    await engine.handle({
+        "type": "create_file_trigger",
+        "payload": {
+            "triggerId": "filtered", "workflowId": "watched", "name": "Filtered",
+            "watchPath": "inbox", "pattern": "**/*.md", "cooldownSeconds": 15,
+            "goal": "Review {file}",
+        },
+    })
+
+    inbox.joinpath("note.txt").write_text("changed\n", encoding="utf-8")
+    generated.joinpath("generated.md").write_text("changed\n", encoding="utf-8")
+
+    assert await engine.run_due_file_triggers() == []
+    assert engine.file_triggers["filtered"].baseline == {}
+
+
+@pytest.mark.asyncio
+async def test_file_watch_cooldown_defers_a_second_change(tmp_path: Path) -> None:
+    watched = tmp_path / "input.md"
+    watched.write_text("one\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM("done\n"))
+    await create_file_watch_workflow(engine)
+    await engine.handle({
+        "type": "create_file_trigger",
+        "payload": {
+            "triggerId": "cooldown", "workflowId": "watched", "name": "Cooldown",
+            "watchPath": "input.md", "pattern": "*", "cooldownSeconds": 30,
+            "goal": "Review {file}",
+        },
+    })
+    now = datetime.now(timezone.utc)
+    watched.write_text("two and larger\n", encoding="utf-8")
+    assert len(await engine.run_due_file_triggers(now)) == 1
+    watched.write_text("three is even larger\n", encoding="utf-8")
+
+    assert await engine.run_due_file_triggers(now + timedelta(seconds=10)) == []
+    assert len(await engine.run_due_file_triggers(now + timedelta(seconds=31))) == 1
+
+
+@pytest.mark.asyncio
+async def test_file_watch_and_baseline_survive_restart(tmp_path: Path) -> None:
+    watched = tmp_path / "persistent.md"
+    watched.write_text("before\n", encoding="utf-8")
+    first = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await create_file_watch_workflow(first)
+    await first.handle({
+        "type": "create_file_trigger",
+        "payload": {
+            "triggerId": "persistent-watch", "workflowId": "watched", "name": "Persistent",
+            "watchPath": "persistent.md", "pattern": "*", "cooldownSeconds": 15,
+            "goal": "Review {file}",
+        },
+    })
+
+    restarted = TaskloomEngine(tmp_path, llm=FakeLLM("restored\n"))
+    assert await restarted.run_due_file_triggers() == []
+    watched.write_text("after restart\n", encoding="utf-8")
+    runs = await restarted.run_due_file_triggers()
+
+    assert len(runs) == 1
+    assert restarted.state_payload()["fileTriggers"][0]["id"] == "persistent-watch"
+
+
+@pytest.mark.asyncio
+async def test_file_watch_rejects_workspace_escape(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await create_file_watch_workflow(engine)
+
+    with pytest.raises(ProtocolError) as caught:
+        await engine.handle({
+            "type": "create_file_trigger",
+            "payload": {
+                "workflowId": "watched", "name": "Unsafe", "watchPath": "../outside",
+                "pattern": "*", "cooldownSeconds": 15, "goal": "Review {file}",
+            },
+        })
+
+    assert caught.value.code == "unsafe_path"
+
+
+@pytest.mark.asyncio
+async def test_file_watch_suppresses_workflow_write_feedback_loop(tmp_path: Path) -> None:
+    watched = tmp_path / "loop.md"
+    watched.write_text("baseline\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM("workflow output\n"))
+    await create_file_watch_workflow(engine, approval_mode="trusted", kind="file_edit")
+    await engine.handle({
+        "type": "create_file_trigger",
+        "payload": {
+            "triggerId": "loop-safe", "workflowId": "watched", "name": "Loop safe",
+            "watchPath": "loop.md", "pattern": "*", "cooldownSeconds": 15,
+            "goal": "Update {file}",
+        },
+    })
+    now = datetime.now(timezone.utc)
+    watched.write_text("external change\n", encoding="utf-8")
+
+    first = await engine.run_due_file_triggers(now)
+    repeated = await engine.run_due_file_triggers(now + timedelta(seconds=16))
+
+    assert len(first) == 1
+    assert watched.read_text(encoding="utf-8") == "workflow output\n"
+    assert repeated == []
+
+
 @pytest.mark.asyncio
 async def test_failed_workflow_can_retry_from_failed_step(tmp_path: Path) -> None:
     llm = FlakyLLM()
