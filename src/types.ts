@@ -17,6 +17,79 @@ export interface ApprovalRequest {
   before: string;
   after: string;
   summary: string;
+  workflowRunId?: string;
+  stepRunId?: string;
+}
+
+export type AgentCapability = "analysis" | "file_edit" | "validate";
+export type ApprovalMode = "observe" | "approve_changes" | "approve_plan" | "trusted";
+export type WorkflowStatus = "queued" | "running" | "needs_approval" | "completed" | "failed" | "cancelled";
+export type StepStatus = WorkflowStatus | "rejected";
+
+export interface AgentProfile {
+  id: string;
+  name: string;
+  role: string;
+  instructions: string;
+  provider: "openai" | "ollama";
+  model?: string;
+  capabilities: AgentCapability[];
+}
+
+export interface WorkflowStep {
+  id: string;
+  name: string;
+  agentId: string;
+  kind: AgentCapability;
+  instruction: string;
+  dependsOn: string[];
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description: string;
+  approvalMode: ApprovalMode;
+  enabled: boolean;
+  steps: WorkflowStep[];
+}
+
+export interface StepRun {
+  id: string;
+  workflowRunId: string;
+  stepId: string;
+  agentId: string;
+  name: string;
+  kind: AgentCapability;
+  status: StepStatus;
+  output: string;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface WorkflowRun {
+  id: string;
+  workflowId: string;
+  goal: string;
+  targetFile: string;
+  status: WorkflowStatus;
+  currentStep?: string;
+  error?: string;
+  planApproved: boolean;
+  startedAt?: string;
+  completedAt?: string;
+  steps: StepRun[];
+}
+
+export interface PlanApprovalRequest {
+  requestId: string;
+  workflowRunId: string;
+  workflowName: string;
+  goal: string;
+  targetFile: string;
+  summary: string;
+  steps: Array<{ name: string; agentName: string; kind: AgentCapability }>;
 }
 
 export interface BridgeRequest {

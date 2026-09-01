@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { documentDir, join, resourceDir } from "@tauri-apps/api/path";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
-import type { AgentTask, ApprovalRequest, BridgeRequest, BridgeResponse } from "../types";
+import type {
+  AgentProfile, AgentTask, ApprovalRequest, BridgeRequest, BridgeResponse,
+  PlanApprovalRequest, Workflow, WorkflowRun,
+} from "../types";
 
 export type BridgeStatus = "connecting" | "connected" | "error" | "stopped";
 
@@ -9,11 +12,21 @@ export interface AgentBridge {
   status: BridgeStatus;
   tasks: AgentTask[];
   approval: ApprovalRequest | null;
+  planApproval: PlanApprovalRequest | null;
+  agents: AgentProfile[];
+  workflows: Workflow[];
+  workflowRuns: WorkflowRun[];
   error: string | null;
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
   runTask: (taskId: string) => Promise<void>;
   decideApproval: (requestId: string, decision: "approve" | "reject") => Promise<void>;
+  decidePlanApproval: (requestId: string, decision: "approve" | "reject") => Promise<void>;
+  createAgent: (input: Omit<AgentProfile, "id">) => Promise<AgentProfile>;
+  createWorkflow: (input: Omit<Workflow, "id" | "enabled">) => Promise<Workflow>;
+  runWorkflow: (workflowId: string, goal: string, targetFile: string) => Promise<void>;
+  cancelWorkflow: (workflowRunId: string) => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
 type PendingRequest = {
@@ -30,6 +43,10 @@ export function useAgentBridge(): AgentBridge {
   const [status, setStatus] = useState<BridgeStatus>("connecting");
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
+  const [planApproval, setPlanApproval] = useState<PlanApprovalRequest | null>(null);
+  const [agents, setAgents] = useState<AgentProfile[]>([]);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
   const [error, setError] = useState<string | null>(null);
   const childRef = useRef<Child | null>(null);
   const pendingRef = useRef(new Map<string, PendingRequest>());
@@ -53,13 +70,23 @@ export function useAgentBridge(): AgentBridge {
     if (message.type === "approval_required" && message.payload) {
       setApproval(message.payload as unknown as ApprovalRequest);
     }
-    if (message.type === "task_list" && message.payload) {
+    if (message.type === "plan_approval_required" && message.payload) {
+      setPlanApproval(message.payload as unknown as PlanApprovalRequest);
+    }
+    if ((message.type === "task_list" || message.type === "state_snapshot") && message.payload) {
       const restoredTasks = message.payload.tasks;
       const restoredApprovals = message.payload.approvals;
+      const restoredPlanApprovals = message.payload.planApprovals;
       if (Array.isArray(restoredTasks)) setTasks(restoredTasks as AgentTask[]);
       if (Array.isArray(restoredApprovals)) {
         setApproval((restoredApprovals[0] as ApprovalRequest | undefined) ?? null);
       }
+      if (Array.isArray(restoredPlanApprovals)) {
+        setPlanApproval((restoredPlanApprovals[0] as PlanApprovalRequest | undefined) ?? null);
+      }
+      if (Array.isArray(message.payload.agents)) setAgents(message.payload.agents as unknown as AgentProfile[]);
+      if (Array.isArray(message.payload.workflows)) setWorkflows(message.payload.workflows as unknown as Workflow[]);
+      if (Array.isArray(message.payload.workflowRuns)) setWorkflowRuns(message.payload.workflowRuns as unknown as WorkflowRun[]);
     }
     const task = message.payload?.task as AgentTask | undefined;
     if (task) upsertTask(task);
@@ -120,7 +147,7 @@ export function useAgentBridge(): AgentBridge {
         childRef.current = child;
         setStatus("connected");
         setError(null);
-        await child.write(`${JSON.stringify({ id: "bootstrap-state", type: "list_tasks", payload: {} })}\n`);
+        await child.write(`${JSON.stringify({ id: "bootstrap-state", type: "list_state", payload: {} })}\n`);
       } catch (cause) {
         setStatus("error");
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -191,8 +218,44 @@ export function useAgentBridge(): AgentBridge {
   const decideApproval = useCallback(async (requestId: string, decision: "approve" | "reject") => {
     await send({ type: "approval_decision", payload: { requestId, decision } });
     setApproval(null);
-    await send({ type: "list_tasks", payload: {} });
+    await send({ type: "list_state", payload: {} });
   }, [send]);
 
-  return { status, tasks, approval, error, send, createTask, runTask, decideApproval };
+  const refresh = useCallback(async () => {
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  const decidePlanApproval = useCallback(async (requestId: string, decision: "approve" | "reject") => {
+    await send({ type: "plan_approval_decision", payload: { requestId, decision } });
+    setPlanApproval(null);
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  const createAgent = useCallback(async (input: Omit<AgentProfile, "id">) => {
+    const response = await send({ type: "create_agent", payload: input });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.agent as unknown as AgentProfile;
+  }, [send]);
+
+  const createWorkflow = useCallback(async (input: Omit<Workflow, "id" | "enabled">) => {
+    const response = await send({ type: "create_workflow", payload: input });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.workflow as unknown as Workflow;
+  }, [send]);
+
+  const runWorkflow = useCallback(async (workflowId: string, goal: string, targetFile: string) => {
+    await send({ type: "run_workflow", payload: { workflowId, goal, targetFile } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  const cancelWorkflow = useCallback(async (workflowRunId: string) => {
+    await send({ type: "cancel_workflow", payload: { workflowRunId } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  return {
+    status, tasks, approval, planApproval, agents, workflows, workflowRuns, error, send,
+    createTask, runTask, decideApproval, decidePlanApproval, createAgent, createWorkflow,
+    runWorkflow, cancelWorkflow, refresh,
+  };
 }

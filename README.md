@@ -3,14 +3,13 @@
 
   # Taskloom
 
-  **Visual agent orchestration, woven around human control.**
+  **A local-first visual control plane for teams of AI agents.**
 
-  A local-first desktop workspace that turns AI file operations into a visual,
-  reviewable Kanban workflow—without requiring users to manage terminals,
-  orchestration files, or Git worktrees.
+  Build reusable agent teams, automate multi-step work, and choose exactly where
+  humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.1.0-24c8db.svg)](https://github.com/PlainJane20/taskloom)
+  [![Release](https://img.shields.io/badge/release-v0.2.0-24c8db.svg)](https://github.com/PlainJane20/taskloom)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -22,101 +21,112 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom is a working MVP. Task creation, local model generation, durable board state, human approval, safe file writes, and snapshot creation are implemented and tested. See the [roadmap](#roadmap) for the path to a zero-dependency public release.
+> **Project status:** Taskloom v0.2 is a working multi-agent automation MVP. Reusable agents, dependency-aware workflows, four autonomy policies, durable execution history, local model generation, human approvals, guarded writes, and snapshots are implemented and tested.
 
 ## Why Taskloom
 
 Local coding agents are powerful, but their safest workflows still assume that the user is comfortable with command-line tools, configuration files, repository layouts, and raw diffs. That excludes many people who would benefit most from private, local AI automation.
 
-Taskloom moves those controls into a desktop interface:
+Taskloom moves those controls into a desktop automation studio:
 
-- **See the work** — every task has a visible state on a Kanban board.
-- **Stay in control** — proposed file changes pause for explicit human review.
+- **Assemble an agent team** — create reusable Planners, Builders, Reviewers, and domain specialists.
+- **Automate the handoffs** — connect agent steps into dependency-aware workflows.
+- **Choose the safety policy** — Observe, Approve Changes, Approve Plan, or Trusted automation.
+- **See the work** — inspect every workflow run, agent step, result, failure, and approval.
 - **Keep data local** — Ollama runs supported models on the user's machine.
-- **Recover safely** — accepted writes snapshot the previous file state first.
-- **Resume seamlessly** — SQLite restores tasks and unresolved approvals after restart.
+- **Recover safely** — every automated write remains workspace-confined, atomic, and snapshotted.
+- **Resume seamlessly** — SQLite restores agents, workflows, runs, steps, tasks, and approvals.
 
-Taskloom does not execute generated code or silently modify files. The human remains the final authority at the mutation boundary.
+Taskloom is not another model competing with coding agents. It is the visual policy and orchestration layer above them.
 
 ## How it works
 
 ```text
-Create task       Generate locally       Review proposal       Apply safely
-    │                    │                      │                    │
-    ▼                    ▼                      ▼                    ▼
-┌─────────┐       ┌─────────────┐       ┌──────────────┐      ┌───────────┐
-│ Backlog │ ────► │   Active    │ ────► │    Needs     │ ───► │ Completed │
-└─────────┘       │ Ollama / API│       │   Approval   │      └───────────┘
-                  └─────────────┘       └──────┬───────┘            │
-                                               │                     ▼
-                                        Reject │              Snapshot + write
-                                               ▼
-                                            Backlog
-                                         (no file write)
+Goal → Workflow → Planner → Builder → Validator → Reviewer → Result
+          │                      │
+          │                      └── guarded file proposal
+          ▼
+  Automation policy
+  ├── Observe ────────────────► report only; never write
+  ├── Approve Changes ────────► review each before/after diff
+  ├── Approve Plan ───────────► approve once; execute guarded plan
+  └── Trusted ────────────────► automatic snapshots + atomic writes
 ```
 
-1. A user creates a task with a title, instruction, provider, and workspace-relative target path.
-2. The Python engine validates the path and asks the configured model for complete file contents.
-3. The destination remains untouched while Taskloom displays the current and proposed content side by side.
-4. **Reject** discards the proposal and returns the task to Backlog.
-5. **Approve & apply** snapshots the previous state, writes the reviewed content, and completes the task.
+1. A user selects or creates a workflow, supplies a goal, and chooses a workspace-relative target.
+2. Taskloom resolves step dependencies and routes each step to its assigned agent.
+3. Agents exchange durable outputs while the engine limits local inference to one model job at a time.
+4. The workflow's policy determines whether Taskloom observes, pauses per change, requests one plan approval, or applies trusted changes automatically.
+5. Every authorized write is path-checked, snapshotted, and atomically replaced before the run advances.
 
 ## Core capabilities
 
 | Capability | What Taskloom provides |
 |---|---|
+| Reusable agent team | Persistent agent profiles with roles, instructions, providers, models, and capabilities |
+| Multi-step automation | Planner → Builder → Validator → Reviewer workflows with explicit dependencies |
+| Graduated autonomy | Observe, Approve Changes, Approve Plan, and Trusted execution policies |
+| Durable execution history | Workflow and step runs survive restarts with outputs, errors, and timestamps |
 | Visual orchestration | Backlog, Active, Needs Approval, and Completed workflow states |
 | Human-in-the-loop control | Before/after file review with explicit Approve and Reject actions |
 | Local inference | Ollama support with configurable local models and memory-conscious unloading |
 | Optional cloud inference | OpenAI provider adapter enabled only when the user supplies credentials |
-| Durable state | SQLite persistence for tasks, errors, and unresolved approvals |
+| Durable state | SQLite persistence for agents, workflows, runs, steps, tasks, errors, and approvals |
 | File safety | Canonical path containment prevents writes outside the selected workspace |
-| Recovery | Timestamped snapshots preserve the pre-write file state |
+| Recovery | Timestamped snapshots and atomic replacement preserve pre-write file state |
+| Resource protection | A single execution lock prevents competing local model jobs from overwhelming a machine |
 | Resilient output handling | Removes accidental outer Markdown fences without altering embedded content |
 | Desktop distribution | Native Tauri shell with macOS application packaging and branded assets |
 | Automated quality gates | Python, React, TypeScript, and Rust checks on every push and pull request |
 
 ## Architecture
 
-Taskloom deliberately separates presentation, orchestration, and file authority. The React application never writes task output directly.
+Taskloom deliberately separates presentation, orchestration, policy, model access, and file authority. The React application never writes agent output directly.
 
 ```mermaid
 flowchart LR
-    User([User]) --> Board[React Kanban board]
+    User([User]) --> Studio[Automation Studio]
 
     subgraph Desktop[Taskloom desktop]
-        Board --> Bridge[useAgentBridge]
+        Studio --> Bridge[useAgentBridge]
         Bridge <-->|JSONL over stdin / stdout| Engine[Python async engine]
-        Engine --> State[(SQLite task state)]
+        Engine --> Registry[Agent registry]
+        Engine --> Runner[Dependency-aware workflow runner]
+        Runner --> Policy{Automation policy}
+        Engine --> State[(SQLite durable state)]
         Engine --> Guard[Workspace path guard]
     end
 
-    Engine --> Provider{Model provider}
+    Runner --> Provider{Model provider}
     Provider -->|Local-first| Ollama[Ollama]
     Provider -->|Opt-in cloud| OpenAI[OpenAI API]
     Ollama --> Proposal[Proposed file content]
     OpenAI --> Proposal
-    Proposal --> Engine
-    Engine --> Review[Before / after approval modal]
+    Proposal --> Policy
+    Policy -->|Observe| Report[Store result only]
+    Policy -->|Approve change| Review[Before / after diff]
+    Policy -->|Approve plan| Plan[Plan approval]
+    Policy -->|Trusted| Snapshot[Create pre-write snapshot]
     Review --> Decision{Human decision}
-    Decision -->|Reject| Backlog[Return to Backlog<br/>No file write]
-    Decision -->|Approve| Snapshot[Create pre-write snapshot]
+    Plan --> Decision
+    Decision -->|Reject| Stop[Cancel safely<br/>No file write]
+    Decision -->|Approve| Snapshot
     Snapshot --> Guard
     Guard --> Write[Atomic guarded file write]
-    Write --> Complete[Move task to Completed]
+    Write --> Complete[Advance dependent steps]
 ```
 
-The approval modal is the system's trust boundary: provider output can become a proposal, but only an explicit human decision can authorize a filesystem mutation.
+The policy engine is the system's trust boundary: generated output can become an artifact, but filesystem mutation requires either explicit approval or a workflow the user deliberately marked Trusted.
 
 ### Technology stack
 
 | Layer | Technology | Responsibility |
 |---|---|---|
 | Desktop | Tauri 2 + Rust | Native lifecycle, security capabilities, resource bundling, packaging |
-| Interface | React 18 + TypeScript + Tailwind CSS | Board state, task forms, diff review, status feedback |
+| Interface | React 18 + TypeScript + Tailwind CSS | Automation studio, agent/workflow forms, run history, board, approvals |
 | Bridge | Tauri shell plugin + JSONL | Asynchronous process lifecycle and language-neutral IPC |
-| Engine | Python 3.11+ + `asyncio` | Task transitions, model calls, validation, snapshots, file writes |
-| Persistence | SQLite with WAL | Restart-safe tasks and pending approval requests |
+| Engine | Python 3.11+ + `asyncio` | Workflow dependencies, policy decisions, model calls, validation, snapshots |
+| Persistence | SQLite with WAL | Restart-safe agents, workflows, runs, step artifacts, tasks, and approvals |
 | Providers | Ollama + OpenAI | Local-first generation with an opt-in cloud adapter |
 | Testing | pytest + Vitest + React Testing Library | Unit, integration, persistence, and user-interaction coverage |
 
@@ -159,23 +169,18 @@ ollama ls
 TASKLOOM_OLLAMA_MODEL=qwen2.5-coder:7b npm run tauri dev
 ```
 
-### 4. Run a first task
+### 4. Run your first agent team
 
-Use this safe example in the task form:
+Open **Automations**, choose **Safe delivery pipeline**, and use:
 
 ```text
-Title: Create a TypeScript slug utility
+Goal: Create a concise Taskloom welcome note. Explain that specialized agents
+plan, implement, validate, and review the work under human-controlled policies.
 
-Instruction: Return only a valid TypeScript module. Export a function named
-slugify(text: string): string that lowercases text, converts whitespace and
-underscores to hyphens, removes unsupported characters, collapses repeated
-hyphens, and trims leading or trailing hyphens.
-
-Target file: scratch/slugify.ts
-Provider: Ollama
+Target file: scratch/automation-demo.md
 ```
 
-Press Play, review the proposal, and select **Approve & apply** only if the output is correct.
+Select **Start workflow**, inspect the four-step plan, then choose **Approve & run**. The run history shows each agent handoff and its final status.
 
 ## Configuration
 
@@ -193,28 +198,32 @@ Development mode treats the checked-out repository as its workspace. Packaged bu
 
 ## Safety guarantees
 
-Taskloom treats every generated response as untrusted until approval.
+Taskloom treats generated responses as untrusted artifacts and applies the workflow's explicit policy at the mutation boundary.
 
 | Boundary | Enforcement |
 |---|---|
 | Workspace escape | Target paths are resolved and verified to remain beneath the workspace root |
-| Unreviewed mutation | Model output is persisted as a pending change; the target file stays untouched |
+| Observe policy | Generated file content is retained as a step artifact and never written |
+| Approve Changes policy | Every mutation is persisted and paused for before/after review |
+| Approve Plan policy | No step begins until the complete agent plan receives explicit approval |
+| Trusted policy | Writes may proceed automatically, but path guards, snapshots, and atomic replacement remain mandatory |
 | Rejected proposal | Pending content is deleted and the original file remains unchanged |
-| Approved mutation | A snapshot is created before the reviewed content is written |
-| Interrupted run | Active tasks recover to Backlog after restart |
-| Interrupted approval | Pending approvals survive process and application restarts |
+| Authorized mutation | A snapshot is created before content is atomically written |
+| Resource contention | One engine lock serializes model work to prevent concurrent local inference spikes |
+| Interrupted run | Active steps recover to a resumable queued state after restart |
+| Interrupted approval | File and plan approvals survive process and application restarts |
 | Secret handling | Cloud credentials are read from environment variables and never stored in board state |
 
 > [!IMPORTANT]
-> Human approval reduces risk; it does not prove generated code is correct. Review proposals and run the appropriate tests before using generated output in production.
+> Automation policy reduces operational risk; it does not prove generated code is correct. Start new workflows in Observe or Approve Changes mode, then increase autonomy only after their behavior is well understood.
 
 ## Testing and quality
 
 ```bash
-# Python IPC, task state, persistence, snapshot, and path-safety tests
+# Python IPC, orchestration, policy, persistence, snapshot, and path-safety tests
 python -m pytest -q
 
-# React approval interaction tests
+# React file-change and plan-approval interaction tests
 npm test
 
 # TypeScript validation and optimized frontend build
@@ -224,18 +233,20 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **19 automated tests**: 16 Python tests and 3 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **29 automated tests**: 23 Python tests and 6 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 
 ```text
 taskloom/
 ├── engine/
-│   └── main.py                         # Async engine, IPC, persistence, file safety
+│   └── main.py                         # Agents, workflow runner, policies, IPC, persistence
 ├── src/
 │   ├── components/
-│   │   ├── KanbanBoard.tsx             # Visual task workflow
-│   │   └── ApprovalModal.tsx            # Human review boundary
+│   │   ├── AutomationDashboard.tsx      # Agent team, workflows, and durable run history
+│   │   ├── PlanApprovalModal.tsx        # Approve-once workflow boundary
+│   │   ├── KanbanBoard.tsx              # Individual task workflow
+│   │   └── ApprovalModal.tsx            # Before/after mutation boundary
 │   ├── hooks/
 │   │   └── useAgentBridge.ts            # Python process and JSONL lifecycle
 │   └── types.ts                         # Shared frontend protocol types
@@ -264,24 +275,32 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 
 ## Roadmap
 
+- [x] Reusable agent profiles with roles, providers, and capabilities
+- [x] Dependency-aware multi-agent workflows
+- [x] Observe, Approve Changes, Approve Plan, and Trusted policies
+- [x] Durable workflow and step-run history with restart recovery
+- [x] Serialized local inference and atomic guarded file writes
 - [ ] Task editing, deletion, filtering, and run history
 - [ ] In-app workspace and model settings
 - [ ] Syntax-aware diffs with line-level navigation
-- [ ] Configurable validation gates before approval
+- [ ] Custom validation rules and test-command gates
+- [ ] Scheduled, filesystem, GitHub, and webhook triggers
+- [ ] Parallel branches with configurable resource budgets
 - [ ] Snapshot browser and one-click restoration
 - [ ] Compiled Python sidecar for zero-dependency installation
 - [ ] Signed and notarized macOS releases
 - [ ] Additional agent and provider adapters
-- [ ] Multi-file task plans and dependency-aware workflows
+- [ ] Multi-file transactions with all-or-nothing rollback
 
 ## Engineering highlights
 
 Taskloom demonstrates several production-oriented software engineering challenges in a compact desktop application:
 
-- Designed a language-neutral asynchronous JSONL protocol that keeps a React/Tauri interface responsive while a long-running Python process performs local model inference.
-- Implemented a human-in-the-loop mutation interceptor with path containment, durable pending approvals, before/after review, and pre-write snapshots.
-- Coordinated state across React, a Python task state machine, and SQLite while recovering coherently from interrupted generation and approval flows.
-- Established 19 automated tests and cross-language CI gates covering Python, React, TypeScript, and Rust.
+- Designed a language-neutral asynchronous JSONL protocol that keeps a React/Tauri interface responsive while a long-running Python orchestration engine coordinates model work.
+- Implemented a persistent multi-agent workflow runtime with explicit dependency resolution, agent-to-agent artifacts, deterministic validation, cancellation, and restart recovery.
+- Built a policy-driven mutation interceptor supporting four autonomy levels while preserving canonical path containment, atomic writes, durable approvals, and pre-write snapshots.
+- Coordinated state across React, a Python workflow state machine, and seven SQLite tables while serializing local inference to control CPU/GPU pressure.
+- Established 29 automated tests and cross-language CI gates covering Python, React, TypeScript, and Rust.
 
 ## Contributing
 
@@ -315,5 +334,5 @@ Please avoid committing model files, generated workspaces, `.taskloom/` state, o
 Taskloom is open source under the [MIT License](LICENSE).
 
 <div align="center">
-  <sub>Built to make powerful local agents understandable, reviewable, and safe.</sub>
+  <sub>Built to make teams of local agents automated, understandable, reviewable, and safe.</sub>
 </div>

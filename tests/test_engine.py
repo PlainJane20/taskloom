@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -9,10 +11,14 @@ from engine.main import ProtocolError, SnapshotStore, TaskloomEngine, normalize_
 class FakeLLM:
     def __init__(self, result: str = "new content\n") -> None:
         self.result = result
+        self.calls: list[tuple[str, str, str, str | None]] = []
 
-    async def generate(self, prompt: str, current: str, provider: str) -> str:
+    async def generate(
+        self, prompt: str, current: str, provider: str, model: str | None = None,
+    ) -> str:
         assert prompt
         assert provider in {"ollama", "openai"}
+        self.calls.append((prompt, current, provider, model))
         return self.result
 
 
@@ -196,3 +202,198 @@ async def test_interrupted_active_task_returns_to_backlog_on_restart(tmp_path: P
     restarted_engine = TaskloomEngine(tmp_path, llm=FakeLLM())
 
     assert restarted_engine.tasks["interrupted"].status == "backlog"
+
+
+@pytest.mark.asyncio
+async def test_default_agent_team_and_workflow_are_seeded(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+
+    response = await engine.handle({"id": "state", "type": "list_state", "payload": {}})
+    payload = response[0]["payload"]
+
+    assert {agent["id"] for agent in payload["agents"]} == {"planner", "builder", "reviewer"}
+    assert payload["workflows"][0]["id"] == "safe-delivery"
+    assert payload["workflows"][0]["approvalMode"] == "approve_plan"
+    assert [step["kind"] for step in payload["workflows"][0]["steps"]] == [
+        "analysis", "file_edit", "validate", "analysis",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_approve_plan_pauses_then_executes_all_agents(tmp_path: Path) -> None:
+    target = tmp_path / "scratch" / "result.md"
+    target.parent.mkdir()
+    target.write_text("before\n", encoding="utf-8")
+    llm = FakeLLM("after\n")
+    engine = TaskloomEngine(tmp_path, llm=llm)
+
+    await engine.handle({
+        "id": "run", "type": "run_workflow",
+        "payload": {
+            "workflowId": "safe-delivery", "goal": "Improve the result",
+            "targetFile": "scratch/result.md",
+        },
+    })
+
+    run = next(iter(engine.workflow_runs.values()))
+    approval = next(iter(engine.plan_approvals.values()))
+    assert run.status == "needs_approval"
+    assert target.read_text(encoding="utf-8") == "before\n"
+    assert llm.calls == []
+
+    await engine.handle({
+        "id": "approve", "type": "plan_approval_decision",
+        "payload": {"requestId": approval.request_id, "decision": "approve"},
+    })
+
+    assert run.status == "completed"
+    assert run.plan_approved is True
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert {step.status for step in engine.step_runs.values()} == {"completed"}
+    assert len(llm.calls) == 3
+    assert list((tmp_path / ".taskloom" / "snapshots").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_approve_changes_pauses_at_mutation_and_reject_cancels_run(tmp_path: Path) -> None:
+    target = tmp_path / "file.txt"
+    target.write_text("safe\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM("proposed\n"))
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "review-each", "name": "Review each", "description": "Test",
+            "approvalMode": "approve_changes",
+            "steps": [{
+                "id": "edit", "name": "Edit", "agentId": "builder", "kind": "file_edit",
+                "instruction": "Edit the file", "dependsOn": [],
+            }],
+        },
+    })
+    await engine.handle({
+        "type": "run_workflow",
+        "payload": {"workflowId": "review-each", "goal": "Change it", "targetFile": "file.txt"},
+    })
+
+    run = next(run for run in engine.workflow_runs.values() if run.workflow_id == "review-each")
+    change = next(change for change in engine.pending.values() if change.workflow_run_id == run.id)
+    assert run.status == "needs_approval"
+    assert target.read_text(encoding="utf-8") == "safe\n"
+
+    await engine.handle({
+        "type": "approval_decision",
+        "payload": {"requestId": change.request_id, "decision": "reject"},
+    })
+
+    assert run.status == "cancelled"
+    assert target.read_text(encoding="utf-8") == "safe\n"
+
+
+@pytest.mark.asyncio
+async def test_approved_workflow_change_resumes_run_to_completion(tmp_path: Path) -> None:
+    target = tmp_path / "approved.txt"
+    target.write_text("before\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM("after\n"))
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "approve-one", "name": "Approve one", "description": "Test",
+            "approvalMode": "approve_changes",
+            "steps": [{
+                "id": "edit", "name": "Edit", "agentId": "builder", "kind": "file_edit",
+                "instruction": "Edit the file", "dependsOn": [],
+            }],
+        },
+    })
+    await engine.handle({
+        "type": "run_workflow",
+        "payload": {"workflowId": "approve-one", "goal": "Change", "targetFile": "approved.txt"},
+    })
+    run = next(run for run in engine.workflow_runs.values() if run.workflow_id == "approve-one")
+    change = next(change for change in engine.pending.values() if change.workflow_run_id == run.id)
+
+    await engine.handle({
+        "type": "approval_decision",
+        "payload": {"requestId": change.request_id, "decision": "approve"},
+    })
+
+    assert run.status == "completed"
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert not engine.pending
+
+
+@pytest.mark.asyncio
+async def test_observe_mode_never_writes_generated_file(tmp_path: Path) -> None:
+    target = tmp_path / "observed.txt"
+    target.write_text("original\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM("proposal\n"))
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "observe", "name": "Observe", "description": "No writes",
+            "approvalMode": "observe",
+            "steps": [{
+                "id": "draft", "name": "Draft", "agentId": "builder", "kind": "file_edit",
+                "instruction": "Draft a change", "dependsOn": [],
+            }],
+        },
+    })
+
+    await engine.handle({
+        "type": "run_workflow",
+        "payload": {"workflowId": "observe", "goal": "Suggest", "targetFile": "observed.txt"},
+    })
+
+    run = next(run for run in engine.workflow_runs.values() if run.workflow_id == "observe")
+    step = next(step for step in engine.step_runs.values() if step.workflow_run_id == run.id)
+    assert run.status == "completed"
+    assert step.output == "proposal\n"
+    assert target.read_text(encoding="utf-8") == "original\n"
+
+
+@pytest.mark.asyncio
+async def test_custom_agents_and_workflows_survive_restart(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_agent",
+        "payload": {
+            "agentId": "security", "name": "Security", "role": "Risk reviewer",
+            "instructions": "Find security risks", "provider": "ollama",
+            "capabilities": ["analysis", "validate"],
+        },
+    })
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "security-review", "name": "Security review",
+            "description": "Review a goal", "approvalMode": "observe",
+            "steps": [{
+                "id": "review", "name": "Review", "agentId": "security", "kind": "analysis",
+                "instruction": "Review it", "dependsOn": [],
+            }],
+        },
+    })
+
+    restarted = TaskloomEngine(tmp_path, llm=FakeLLM())
+
+    assert restarted.agents["security"].role == "Risk reviewer"
+    assert restarted.workflows["security-review"].steps[0].agent_id == "security"
+
+
+@pytest.mark.asyncio
+async def test_workflow_rejects_forward_or_unknown_dependency(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+
+    with pytest.raises(ProtocolError) as caught:
+        await engine.handle({
+            "type": "create_workflow",
+            "payload": {
+                "name": "Broken", "description": "Invalid graph", "approvalMode": "observe",
+                "steps": [{
+                    "id": "first", "name": "First", "agentId": "planner", "kind": "analysis",
+                    "instruction": "Plan", "dependsOn": ["missing"],
+                }],
+            },
+        })
+
+    assert caught.value.code == "invalid_dependency"
