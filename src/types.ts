@@ -51,7 +51,31 @@ export interface Workflow {
   description: string;
   approvalMode: ApprovalMode;
   enabled: boolean;
+  archived: boolean;
   steps: WorkflowStep[];
+}
+
+export interface ExecutionEvent {
+  id: string;
+  workflowRunId: string;
+  stepRunId?: string;
+  type: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface AutomationTrigger {
+  id: string;
+  workflowId: string;
+  name: string;
+  intervalMinutes: number;
+  goal: string;
+  targetFile: string;
+  enabled: boolean;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastRunId?: string;
+  error?: string;
 }
 
 export interface StepRun {
@@ -80,6 +104,7 @@ export interface WorkflowRun {
   startedAt?: string;
   completedAt?: string;
   steps: StepRun[];
+  events: ExecutionEvent[];
 }
 
 export interface PlanApprovalRequest {

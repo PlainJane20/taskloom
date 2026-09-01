@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { documentDir, join, resourceDir } from "@tauri-apps/api/path";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import type {
-  AgentProfile, AgentTask, ApprovalRequest, BridgeRequest, BridgeResponse,
+  AgentProfile, AgentTask, ApprovalRequest, AutomationTrigger, BridgeRequest, BridgeResponse,
   PlanApprovalRequest, Workflow, WorkflowRun,
 } from "../types";
 
@@ -16,6 +16,7 @@ export interface AgentBridge {
   agents: AgentProfile[];
   workflows: Workflow[];
   workflowRuns: WorkflowRun[];
+  triggers: AutomationTrigger[];
   error: string | null;
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
@@ -23,9 +24,18 @@ export interface AgentBridge {
   decideApproval: (requestId: string, decision: "approve" | "reject") => Promise<void>;
   decidePlanApproval: (requestId: string, decision: "approve" | "reject") => Promise<void>;
   createAgent: (input: Omit<AgentProfile, "id">) => Promise<AgentProfile>;
-  createWorkflow: (input: Omit<Workflow, "id" | "enabled">) => Promise<Workflow>;
+  createWorkflow: (input: Omit<Workflow, "id" | "enabled" | "archived">) => Promise<Workflow>;
+  updateWorkflow: (workflow: Workflow) => Promise<Workflow>;
+  duplicateWorkflow: (workflowId: string) => Promise<Workflow>;
+  setWorkflowEnabled: (workflowId: string, enabled: boolean) => Promise<void>;
+  archiveWorkflow: (workflowId: string) => Promise<void>;
   runWorkflow: (workflowId: string, goal: string, targetFile: string) => Promise<void>;
+  retryWorkflow: (workflowRunId: string) => Promise<void>;
   cancelWorkflow: (workflowRunId: string) => Promise<void>;
+  createTrigger: (input: Omit<AutomationTrigger, "id" | "lastRunAt" | "lastRunId" | "error" | "nextRunAt">) => Promise<AutomationTrigger>;
+  setTriggerEnabled: (triggerId: string, enabled: boolean) => Promise<void>;
+  runTriggerNow: (triggerId: string) => Promise<void>;
+  deleteTrigger: (triggerId: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -47,6 +57,7 @@ export function useAgentBridge(): AgentBridge {
   const [agents, setAgents] = useState<AgentProfile[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
+  const [triggers, setTriggers] = useState<AutomationTrigger[]>([]);
   const [error, setError] = useState<string | null>(null);
   const childRef = useRef<Child | null>(null);
   const pendingRef = useRef(new Map<string, PendingRequest>());
@@ -87,6 +98,7 @@ export function useAgentBridge(): AgentBridge {
       if (Array.isArray(message.payload.agents)) setAgents(message.payload.agents as unknown as AgentProfile[]);
       if (Array.isArray(message.payload.workflows)) setWorkflows(message.payload.workflows as unknown as Workflow[]);
       if (Array.isArray(message.payload.workflowRuns)) setWorkflowRuns(message.payload.workflowRuns as unknown as WorkflowRun[]);
+      if (Array.isArray(message.payload.triggers)) setTriggers(message.payload.triggers as unknown as AutomationTrigger[]);
     }
     const task = message.payload?.task as AgentTask | undefined;
     if (task) upsertTask(task);
@@ -237,10 +249,38 @@ export function useAgentBridge(): AgentBridge {
     return response.payload?.agent as unknown as AgentProfile;
   }, [send]);
 
-  const createWorkflow = useCallback(async (input: Omit<Workflow, "id" | "enabled">) => {
+  const createWorkflow = useCallback(async (input: Omit<Workflow, "id" | "enabled" | "archived">) => {
     const response = await send({ type: "create_workflow", payload: input });
     await send({ type: "list_state", payload: {} });
     return response.payload?.workflow as unknown as Workflow;
+  }, [send]);
+
+  const updateWorkflow = useCallback(async (workflow: Workflow) => {
+    const response = await send({
+      type: "update_workflow",
+      payload: {
+        workflowId: workflow.id, name: workflow.name, description: workflow.description,
+        approvalMode: workflow.approvalMode, enabled: workflow.enabled, steps: workflow.steps,
+      },
+    });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.workflow as unknown as Workflow;
+  }, [send]);
+
+  const duplicateWorkflow = useCallback(async (workflowId: string) => {
+    const response = await send({ type: "duplicate_workflow", payload: { workflowId } });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.workflow as unknown as Workflow;
+  }, [send]);
+
+  const setWorkflowEnabled = useCallback(async (workflowId: string, enabled: boolean) => {
+    await send({ type: "set_workflow_enabled", payload: { workflowId, enabled } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  const archiveWorkflow = useCallback(async (workflowId: string) => {
+    await send({ type: "archive_workflow", payload: { workflowId } });
+    await send({ type: "list_state", payload: {} });
   }, [send]);
 
   const runWorkflow = useCallback(async (workflowId: string, goal: string, targetFile: string) => {
@@ -253,9 +293,39 @@ export function useAgentBridge(): AgentBridge {
     await send({ type: "list_state", payload: {} });
   }, [send]);
 
+  const retryWorkflow = useCallback(async (workflowRunId: string) => {
+    await send({ type: "retry_workflow", payload: { workflowRunId } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  const createTrigger = useCallback(async (
+    input: Omit<AutomationTrigger, "id" | "lastRunAt" | "lastRunId" | "error" | "nextRunAt">,
+  ) => {
+    const response = await send({ type: "create_trigger", payload: input });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.trigger as unknown as AutomationTrigger;
+  }, [send]);
+
+  const setTriggerEnabled = useCallback(async (triggerId: string, enabled: boolean) => {
+    await send({ type: "set_trigger_enabled", payload: { triggerId, enabled } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  const runTriggerNow = useCallback(async (triggerId: string) => {
+    await send({ type: "run_trigger_now", payload: { triggerId } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  const deleteTrigger = useCallback(async (triggerId: string) => {
+    await send({ type: "delete_trigger", payload: { triggerId } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
   return {
-    status, tasks, approval, planApproval, agents, workflows, workflowRuns, error, send,
+    status, tasks, approval, planApproval, agents, workflows, workflowRuns, triggers, error, send,
     createTask, runTask, decideApproval, decidePlanApproval, createAgent, createWorkflow,
-    runWorkflow, cancelWorkflow, refresh,
+    updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
+    runWorkflow, retryWorkflow, cancelWorkflow, createTrigger, setTriggerEnabled,
+    runTriggerNow, deleteTrigger, refresh,
   };
 }

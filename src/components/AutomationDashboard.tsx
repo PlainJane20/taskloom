@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from "react";
 import {
-  Activity, Bot, CheckCircle2, Circle, CircleStop, Clock3, Plus, Route,
-  ShieldCheck, Sparkles, X, XCircle,
+  Activity, Bot, CalendarClock, CheckCircle2, Circle, CircleStop, Clock3, Copy,
+  Pause, Pencil, Play, Plus, RefreshCw, Route, ShieldCheck, Sparkles, Trash2, X, XCircle,
 } from "lucide-react";
 import type { AgentBridge } from "../hooks/useAgentBridge";
-import type { AgentCapability, ApprovalMode, Workflow, WorkflowRun } from "../types";
+import type { AgentCapability, ApprovalMode, AutomationTrigger, Workflow, WorkflowRun } from "../types";
 import { ApprovalModal, type ApprovalDecisionPayload } from "./ApprovalModal";
 import { PlanApprovalModal } from "./PlanApprovalModal";
 
@@ -30,7 +30,14 @@ function RunStatusIcon({ status }: { status: WorkflowRun["status"] }) {
   return <Clock3 size={16} />;
 }
 
-function WorkflowCard({ workflow, bridge, onRun }: { workflow: Workflow; bridge: AgentBridge; onRun: (workflow: Workflow) => void }) {
+function WorkflowCard({ workflow, bridge, onRun, onEdit, onSchedule, perform }: {
+  workflow: Workflow;
+  bridge: AgentBridge;
+  onRun: (workflow: Workflow) => void;
+  onEdit: (workflow: Workflow) => void;
+  onSchedule: (workflow: Workflow) => void;
+  perform: (action: () => Promise<unknown>) => Promise<void>;
+}) {
   const mode = modeLabels[workflow.approvalMode];
   return (
     <article className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-lg shadow-slate-950/20">
@@ -52,7 +59,18 @@ function WorkflowCard({ workflow, bridge, onRun }: { workflow: Workflow; bridge:
       </div>
       <div className="mt-4 flex items-center justify-between gap-3">
         <p className="text-xs text-slate-500">{mode.description}</p>
-        <button onClick={() => onRun(workflow)} disabled={bridge.status !== "connected"} className="flex shrink-0 items-center gap-2 rounded-lg bg-cyan-400 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-300 disabled:opacity-40"><Sparkles size={15} /> Run workflow</button>
+        <button onClick={() => onRun(workflow)} disabled={bridge.status !== "connected" || !workflow.enabled} className="flex shrink-0 items-center gap-2 rounded-lg bg-cyan-400 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-300 disabled:opacity-40"><Sparkles size={15} /> Run</button>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-800 pt-3 text-[11px] font-semibold text-slate-400">
+        <button onClick={() => onEdit(workflow)} className="flex items-center gap-1 hover:text-slate-100"><Pencil size={13} /> Edit</button>
+        <button onClick={() => void perform(() => bridge.duplicateWorkflow(workflow.id))} className="flex items-center gap-1 hover:text-slate-100"><Copy size={13} /> Duplicate</button>
+        <button onClick={() => onSchedule(workflow)} className="flex items-center gap-1 hover:text-slate-100"><CalendarClock size={13} /> Schedule</button>
+        <button onClick={() => void perform(() => bridge.setWorkflowEnabled(workflow.id, !workflow.enabled))} className={`ml-auto flex items-center gap-1 ${workflow.enabled ? "text-emerald-300" : "text-slate-500"}`}>{workflow.enabled ? <Pause size={13} /> : <Play size={13} />} {workflow.enabled ? "Enabled" : "Paused"}</button>
+        <button aria-label={`Archive ${workflow.name}`} onClick={() => {
+          if (window.confirm(`Archive ${workflow.name}? Existing run history will be preserved.`)) {
+            void perform(() => bridge.archiveWorkflow(workflow.id));
+          }
+        }} className="flex items-center gap-1 text-rose-300 hover:text-rose-200"><Trash2 size={13} /> Archive</button>
       </div>
     </article>
   );
@@ -61,7 +79,9 @@ function WorkflowCard({ workflow, bridge, onRun }: { workflow: Workflow; bridge:
 export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
   const [showAgentForm, setShowAgentForm] = useState(false);
   const [showWorkflowForm, setShowWorkflowForm] = useState(false);
+  const [editTarget, setEditTarget] = useState<Workflow | null>(null);
   const [runTarget, setRunTarget] = useState<Workflow | null>(null);
+  const [scheduleTarget, setScheduleTarget] = useState<Workflow | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,21 +110,47 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
   async function submitWorkflow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const planner = String(data.get("planner"));
-    const builder = String(data.get("builder"));
-    const reviewer = String(data.get("reviewer"));
     await perform(async () => {
-      await bridge.createWorkflow({
-        name: String(data.get("name")), description: String(data.get("description")),
-        approvalMode: String(data.get("approvalMode")) as ApprovalMode,
-        steps: [
-          { id: "plan", name: "Plan", agentId: planner, kind: "analysis", instruction: "Create a concise execution plan.", dependsOn: [] },
-          { id: "implement", name: "Implement", agentId: builder, kind: "file_edit", instruction: "Implement the goal in the target file.", dependsOn: ["plan"] },
-          { id: "validate", name: "Validate", agentId: reviewer, kind: "validate", instruction: "Verify the target file exists and is not empty.", dependsOn: ["implement"] },
-          { id: "review", name: "Review", agentId: reviewer, kind: "analysis", instruction: "Review the result and summarize remaining risks.", dependsOn: ["validate"] },
-        ],
-      });
+      if (editTarget) {
+        await bridge.updateWorkflow({
+          ...editTarget, name: String(data.get("name")),
+          description: String(data.get("description")),
+          approvalMode: String(data.get("approvalMode")) as ApprovalMode,
+          steps: editTarget.steps.map((step) => ({
+            ...step, agentId: String(data.get(`agent-${step.id}`)),
+          })),
+        });
+      } else {
+        const planner = String(data.get("planner"));
+        const builder = String(data.get("builder"));
+        const reviewer = String(data.get("reviewer"));
+        await bridge.createWorkflow({
+          name: String(data.get("name")), description: String(data.get("description")),
+          approvalMode: String(data.get("approvalMode")) as ApprovalMode,
+          steps: [
+            { id: "plan", name: "Plan", agentId: planner, kind: "analysis", instruction: "Create a concise execution plan.", dependsOn: [] },
+            { id: "implement", name: "Implement", agentId: builder, kind: "file_edit", instruction: "Implement the goal in the target file.", dependsOn: ["plan"] },
+            { id: "validate", name: "Validate", agentId: reviewer, kind: "validate", instruction: "Verify the target file exists and is not empty.", dependsOn: ["implement"] },
+            { id: "review", name: "Review", agentId: reviewer, kind: "analysis", instruction: "Review the result and summarize remaining risks.", dependsOn: ["validate"] },
+          ],
+        });
+      }
       setShowWorkflowForm(false);
+      setEditTarget(null);
+    });
+  }
+
+  async function submitSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!scheduleTarget) return;
+    const data = new FormData(event.currentTarget);
+    await perform(async () => {
+      await bridge.createTrigger({
+        workflowId: scheduleTarget.id, name: String(data.get("name")),
+        intervalMinutes: Number(data.get("intervalMinutes")), goal: String(data.get("goal")),
+        targetFile: String(data.get("targetFile")), enabled: true,
+      });
+      setScheduleTarget(null);
     });
   }
 
@@ -147,7 +193,35 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
 
       <div>
         <div className="mb-3 flex items-center gap-2"><Route size={17} className="text-violet-300" /><h3 className="font-semibold">Workflows</h3></div>
-        <div className="grid gap-4 xl:grid-cols-2">{bridge.workflows.map((workflow) => <WorkflowCard key={workflow.id} workflow={workflow} bridge={bridge} onRun={setRunTarget} />)}</div>
+        <div className="grid gap-4 xl:grid-cols-2">{bridge.workflows.map((workflow) => <WorkflowCard
+          key={workflow.id} workflow={workflow} bridge={bridge} onRun={setRunTarget}
+          onEdit={(target) => { setEditTarget(target); setShowWorkflowForm(true); }}
+          onSchedule={setScheduleTarget} perform={perform}
+        />)}</div>
+      </div>
+
+      <div>
+        <div className="mb-3 flex items-center gap-2"><CalendarClock size={17} className="text-amber-300" /><h3 className="font-semibold">Schedules</h3><span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{bridge.triggers.length}</span></div>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {bridge.triggers.length === 0 && <p className="rounded-xl border border-dashed border-slate-800 px-5 py-8 text-center text-sm text-slate-500 lg:col-span-2">Schedule a workflow to automate recurring local work while Taskloom is open.</p>}
+          {bridge.triggers.map((trigger: AutomationTrigger) => {
+            const workflow = bridge.workflows.find((item) => item.id === trigger.workflowId);
+            return <article key={trigger.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="flex items-start justify-between gap-3"><div><h4 className="font-semibold">{trigger.name}</h4><p className="mt-1 text-xs text-slate-500">{workflow?.name ?? "Archived workflow"} · every {trigger.intervalMinutes} minutes</p></div><span className={`h-2.5 w-2.5 rounded-full ${trigger.enabled ? "bg-emerald-400" : "bg-slate-600"}`} /></div>
+              <p className="mt-3 truncate text-xs text-slate-400">{trigger.goal}</p>
+              <p className="mt-1 font-mono text-[11px] text-slate-500">{trigger.targetFile}</p>
+              <p className="mt-3 text-[11px] text-slate-500">Next: {trigger.enabled && trigger.nextRunAt ? new Date(trigger.nextRunAt).toLocaleString() : "Paused"}</p>
+              {trigger.error && <p className="mt-2 text-xs text-rose-300">{trigger.error}</p>}
+              <div className="mt-3 flex items-center gap-4 border-t border-slate-800 pt-3 text-[11px] font-semibold">
+                <button disabled={busy} onClick={() => void perform(() => bridge.runTriggerNow(trigger.id))} className="flex items-center gap-1 text-cyan-300 hover:text-cyan-200"><Play size={13} /> Run now</button>
+                <button disabled={busy} onClick={() => void perform(() => bridge.setTriggerEnabled(trigger.id, !trigger.enabled))} className="flex items-center gap-1 text-slate-400 hover:text-slate-100">{trigger.enabled ? <Pause size={13} /> : <Play size={13} />} {trigger.enabled ? "Pause" : "Resume"}</button>
+                <button aria-label={`Delete ${trigger.name}`} disabled={busy} onClick={() => {
+                  if (window.confirm(`Delete schedule ${trigger.name}?`)) void perform(() => bridge.deleteTrigger(trigger.id));
+                }} className="ml-auto flex items-center gap-1 text-rose-300 hover:text-rose-200"><Trash2 size={13} /> Delete</button>
+              </div>
+            </article>;
+          })}
+        </div>
       </div>
 
       <div>
@@ -169,12 +243,25 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
                   </div>
                 </div>)}
                 {!["completed", "failed", "cancelled"].includes(run.status) && <button aria-label={`Cancel ${workflow?.name ?? "workflow"}`} disabled={busy} onClick={() => void perform(() => bridge.cancelWorkflow(run.id))} className="ml-auto flex items-center gap-1 text-[10px] text-rose-300 hover:text-rose-200"><CircleStop size={13} /> Cancel</button>}
+                {run.status === "failed" && <button aria-label={`Retry ${workflow?.name ?? "workflow"}`} disabled={busy} onClick={() => void perform(() => bridge.retryWorkflow(run.id))} className="ml-auto flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-200"><RefreshCw size={13} /> Retry</button>}
               </div>
               {run.error && <p className="mt-2 text-xs text-rose-300">{run.error}</p>}
+              {run.events?.length > 0 && <details className="mt-3 text-xs text-slate-500"><summary className="cursor-pointer hover:text-slate-300">{run.events.length} execution events</summary><ol className="mt-2 space-y-1 border-l border-slate-700 pl-3">{run.events.slice(-8).map((event) => <li key={event.id}><span className="text-slate-300">{event.message}</span> · {new Date(event.createdAt).toLocaleTimeString()}</li>)}</ol></details>}
             </article>;
           })}
         </div>
       </div>
+
+      {scheduleTarget && <div className="fixed inset-0 z-40 grid place-items-center bg-slate-950/80 p-5">
+        <form onSubmit={(event) => void submitSchedule(event)} className="w-full max-w-xl space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-6">
+          <div className="flex items-start justify-between"><div><h2 className="text-lg font-bold">Schedule {scheduleTarget.name}</h2><p className="mt-1 text-xs text-slate-500">Runs locally while Taskloom is open. Minimum interval: 15 minutes.</p></div><button type="button" aria-label="Close" onClick={() => setScheduleTarget(null)}><X /></button></div>
+          <label className="block text-sm">Schedule name<input required name="name" defaultValue={`${scheduleTarget.name} schedule`} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" /></label>
+          <label className="block text-sm">Run every (minutes)<input required min="15" step="1" type="number" name="intervalMinutes" defaultValue="60" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" /></label>
+          <label className="block text-sm">Goal<textarea required name="goal" rows={3} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Review the project and update the status report." /></label>
+          <label className="block text-sm">Workspace-relative target file<input required name="targetFile" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="scratch/status.md" /></label>
+          <button disabled={busy} className="w-full rounded-lg bg-amber-300 py-2 font-bold text-slate-950 disabled:opacity-50">Create schedule</button>
+        </form>
+      </div>}
 
       {runTarget && <div className="fixed inset-0 z-40 grid place-items-center bg-slate-950/80 p-5">
         <form onSubmit={(event) => void submitRun(event)} className="w-full max-w-xl space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-6">
@@ -199,12 +286,12 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
 
       {showWorkflowForm && <div className="fixed inset-0 z-40 grid place-items-center overflow-auto bg-slate-950/80 p-5">
         <form onSubmit={(event) => void submitWorkflow(event)} className="w-full max-w-lg space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-6">
-          <div className="flex justify-between"><h2 className="text-lg font-bold">Create workflow</h2><button type="button" aria-label="Close" onClick={() => setShowWorkflowForm(false)}><X /></button></div>
-          <label className="block text-sm">Name<input required name="name" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Documentation delivery" /></label>
-          <label className="block text-sm">Description<input required name="description" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Plan, implement, validate, and review documentation." /></label>
-          <label className="block text-sm">Automation policy<select name="approvalMode" defaultValue="approve_plan" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{Object.entries(modeLabels).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}</select></label>
-          {(["planner", "builder", "reviewer"] as const).map((role) => <label key={role} className="block text-sm capitalize">{role}<select required name={role} defaultValue={bridge.agents.find((agent) => agent.id === role)?.id ?? bridge.agents[0]?.id} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{bridge.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}</option>)}</select></label>)}
-          <button disabled={busy || bridge.agents.length === 0} className="w-full rounded-lg bg-violet-400 py-2 font-bold text-slate-950 disabled:opacity-50">Create workflow</button>
+          <div className="flex justify-between"><h2 className="text-lg font-bold">{editTarget ? "Edit workflow" : "Create workflow"}</h2><button type="button" aria-label="Close" onClick={() => { setShowWorkflowForm(false); setEditTarget(null); }}><X /></button></div>
+          <label className="block text-sm">Name<input required name="name" defaultValue={editTarget?.name} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Documentation delivery" /></label>
+          <label className="block text-sm">Description<input required name="description" defaultValue={editTarget?.description} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Plan, implement, validate, and review documentation." /></label>
+          <label className="block text-sm">Automation policy<select name="approvalMode" defaultValue={editTarget?.approvalMode ?? "approve_plan"} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{Object.entries(modeLabels).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}</select></label>
+          {editTarget ? editTarget.steps.map((step) => <label key={step.id} className="block text-sm">{step.name} agent<select required name={`agent-${step.id}`} defaultValue={step.agentId} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{bridge.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}</option>)}</select></label>) : (["planner", "builder", "reviewer"] as const).map((role) => <label key={role} className="block text-sm capitalize">{role}<select required name={role} defaultValue={bridge.agents.find((agent) => agent.id === role)?.id ?? bridge.agents[0]?.id} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">{bridge.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}</option>)}</select></label>)}
+          <button disabled={busy || bridge.agents.length === 0} className="w-full rounded-lg bg-violet-400 py-2 font-bold text-slate-950 disabled:opacity-50">{editTarget ? "Save changes" : "Create workflow"}</button>
         </form>
       </div>}
 
