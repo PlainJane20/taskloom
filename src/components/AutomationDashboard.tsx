@@ -1,10 +1,13 @@
 import { useState, type FormEvent } from "react";
 import {
   Activity, Bot, CalendarClock, CheckCircle2, Circle, CircleStop, Clock3, Copy,
-  Pause, Pencil, Play, Plus, RefreshCw, Route, ShieldCheck, Sparkles, Trash2, X, XCircle,
+  FileSearch, Pause, Pencil, Play, Plus, RefreshCw, Route, ShieldCheck, Sparkles,
+  Trash2, X, XCircle,
 } from "lucide-react";
 import type { AgentBridge } from "../hooks/useAgentBridge";
-import type { AgentCapability, ApprovalMode, AutomationTrigger, Workflow, WorkflowRun } from "../types";
+import type {
+  AgentCapability, ApprovalMode, AutomationTrigger, FileTrigger, Workflow, WorkflowRun,
+} from "../types";
 import { ApprovalModal, type ApprovalDecisionPayload } from "./ApprovalModal";
 import { PlanApprovalModal } from "./PlanApprovalModal";
 
@@ -30,12 +33,13 @@ function RunStatusIcon({ status }: { status: WorkflowRun["status"] }) {
   return <Clock3 size={16} />;
 }
 
-function WorkflowCard({ workflow, bridge, onRun, onEdit, onSchedule, perform }: {
+function WorkflowCard({ workflow, bridge, onRun, onEdit, onSchedule, onWatch, perform }: {
   workflow: Workflow;
   bridge: AgentBridge;
   onRun: (workflow: Workflow) => void;
   onEdit: (workflow: Workflow) => void;
   onSchedule: (workflow: Workflow) => void;
+  onWatch: (workflow: Workflow) => void;
   perform: (action: () => Promise<unknown>) => Promise<void>;
 }) {
   const mode = modeLabels[workflow.approvalMode];
@@ -66,6 +70,7 @@ function WorkflowCard({ workflow, bridge, onRun, onEdit, onSchedule, perform }: 
         <button onClick={() => onEdit(workflow)} className="flex items-center gap-1 hover:text-slate-100"><Pencil size={13} /> Edit</button>
         <button onClick={() => void perform(() => bridge.duplicateWorkflow(workflow.id))} className="flex items-center gap-1 hover:text-slate-100"><Copy size={13} /> Duplicate</button>
         <button onClick={() => onSchedule(workflow)} className="flex items-center gap-1 hover:text-slate-100"><CalendarClock size={13} /> Schedule</button>
+        <button onClick={() => onWatch(workflow)} className="flex items-center gap-1 hover:text-slate-100"><FileSearch size={13} /> Watch files</button>
         <button onClick={() => void perform(() => bridge.setWorkflowEnabled(workflow.id, !workflow.enabled))} className={`ml-auto flex items-center gap-1 ${workflow.enabled ? "text-emerald-300" : "text-slate-500"}`}>{workflow.enabled ? <Pause size={13} /> : <Play size={13} />} {workflow.enabled ? "Enabled" : "Paused"}</button>
         <button aria-label={`Archive ${workflow.name}`} onClick={() => {
           if (window.confirm(`Archive ${workflow.name}? Existing run history will be preserved.`)) {
@@ -83,6 +88,7 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
   const [editTarget, setEditTarget] = useState<Workflow | null>(null);
   const [runTarget, setRunTarget] = useState<Workflow | null>(null);
   const [scheduleTarget, setScheduleTarget] = useState<Workflow | null>(null);
+  const [watchTarget, setWatchTarget] = useState<Workflow | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -164,6 +170,21 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
     });
   }
 
+  async function submitFileWatch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!watchTarget) return;
+    const data = new FormData(event.currentTarget);
+    await perform(async () => {
+      await bridge.createFileTrigger({
+        workflowId: watchTarget.id, name: String(data.get("name")),
+        watchPath: String(data.get("watchPath")), pattern: String(data.get("pattern")),
+        cooldownSeconds: Number(data.get("cooldownSeconds")), goal: String(data.get("goal")),
+        enabled: true,
+      });
+      setWatchTarget(null);
+    });
+  }
+
   async function submitRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!runTarget) return;
@@ -206,8 +227,31 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
         <div className="grid gap-4 xl:grid-cols-2">{bridge.workflows.map((workflow) => <WorkflowCard
           key={workflow.id} workflow={workflow} bridge={bridge} onRun={setRunTarget}
           onEdit={(target) => { setEditTarget(target); setShowWorkflowForm(true); }}
-          onSchedule={setScheduleTarget} perform={perform}
+          onSchedule={setScheduleTarget} onWatch={setWatchTarget} perform={perform}
         />)}</div>
+      </div>
+
+      <div>
+        <div className="mb-3 flex items-center gap-2"><FileSearch size={17} className="text-cyan-300" /><h3 className="font-semibold">File watches</h3><span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{bridge.fileTriggers.length}</span></div>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {bridge.fileTriggers.length === 0 && <p className="rounded-xl border border-dashed border-slate-800 px-5 py-8 text-center text-sm text-slate-500 lg:col-span-2">Watch a workspace file or folder and start a guarded workflow when matching files change.</p>}
+          {bridge.fileTriggers.map((trigger: FileTrigger) => {
+            const workflow = bridge.workflows.find((item) => item.id === trigger.workflowId);
+            return <article key={trigger.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="flex items-start justify-between gap-3"><div><h4 className="font-semibold">{trigger.name}</h4><p className="mt-1 text-xs text-slate-500">{workflow?.name ?? "Archived workflow"} · {trigger.cooldownSeconds}s cooldown</p></div><span className={`h-2.5 w-2.5 rounded-full ${trigger.enabled ? "bg-emerald-400" : "bg-slate-600"}`} /></div>
+              <p className="mt-3 truncate text-xs text-slate-400">{trigger.goal}</p>
+              <div className="mt-2 rounded-lg bg-slate-950/70 px-3 py-2 font-mono text-[11px] text-slate-400"><span className="text-cyan-300">{trigger.watchPath}</span><span className="mx-2 text-slate-700">/</span>{trigger.pattern}</div>
+              <p className="mt-3 text-[11px] text-slate-500">Tracking {trigger.trackedFiles} {trigger.trackedFiles === 1 ? "file" : "files"} · Last activity: {trigger.lastRunAt ? new Date(trigger.lastRunAt).toLocaleString() : "Waiting for a change"}</p>
+              {trigger.error && <p className="mt-2 text-xs text-rose-300">{trigger.error}</p>}
+              <div className="mt-3 flex items-center gap-4 border-t border-slate-800 pt-3 text-[11px] font-semibold">
+                <button disabled={busy} onClick={() => void perform(() => bridge.setFileTriggerEnabled(trigger.id, !trigger.enabled))} className="flex items-center gap-1 text-slate-400 hover:text-slate-100">{trigger.enabled ? <Pause size={13} /> : <Play size={13} />} {trigger.enabled ? "Pause watch" : "Resume watch"}</button>
+                <button aria-label={`Delete file watch ${trigger.name}`} disabled={busy} onClick={() => {
+                  if (window.confirm(`Delete file watch ${trigger.name}?`)) void perform(() => bridge.deleteFileTrigger(trigger.id));
+                }} className="ml-auto flex items-center gap-1 text-rose-300 hover:text-rose-200"><Trash2 size={13} /> Delete</button>
+              </div>
+            </article>;
+          })}
+        </div>
       </div>
 
       <div>
@@ -271,6 +315,19 @@ export function AutomationDashboard({ bridge }: { bridge: AgentBridge }) {
           <label className="block text-sm">Goal<textarea required name="goal" rows={3} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Review the project and update the status report." /></label>
           <label className="block text-sm">Workspace-relative target file<input required name="targetFile" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="scratch/status.md" /></label>
           <button disabled={busy} className="w-full rounded-lg bg-amber-300 py-2 font-bold text-slate-950 disabled:opacity-50">Create schedule</button>
+        </form>
+      </div>}
+
+      {watchTarget && <div className="fixed inset-0 z-40 grid place-items-center bg-slate-950/80 p-5">
+        <form onSubmit={(event) => void submitFileWatch(event)} className="w-full max-w-xl space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-6">
+          <div className="flex items-start justify-between"><div><h2 className="text-lg font-bold">Watch files for {watchTarget.name}</h2><p className="mt-1 text-xs text-slate-500">Taskloom records the current baseline first, then reacts only to later changes while the app is open.</p></div><button type="button" aria-label="Close" onClick={() => setWatchTarget(null)}><X /></button></div>
+          <label className="block text-sm">Watch name<input required name="name" defaultValue={`${watchTarget.name} file watch`} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" /></label>
+          <label className="block text-sm">Workspace-relative file or folder<input required name="watchPath" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="inbox" /></label>
+          <label className="block text-sm">File pattern<input required name="pattern" defaultValue="**/*" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono" /><span className="mt-1 block text-[11px] text-slate-500">Examples: **/*.md, reports/*.json, or **/* for every file.</span></label>
+          <label className="block text-sm">Cooldown (seconds)<input required min="15" max="86400" step="1" type="number" name="cooldownSeconds" defaultValue="30" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" /></label>
+          <label className="block text-sm">Goal<textarea required name="goal" rows={3} defaultValue="Process the changed file: {file}" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" /><span className="mt-1 block text-[11px] text-slate-500">Use {"{file}"} where Taskloom should insert the changed file path.</span></label>
+          <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">Build folders and Taskloom metadata are ignored. Each matching change still follows this workflow’s {modeLabels[watchTarget.approvalMode].label.toLowerCase()} policy.</div>
+          <button disabled={busy} className="w-full rounded-lg bg-cyan-400 py-2 font-bold text-slate-950 disabled:opacity-50">Create file watch</button>
         </form>
       </div>}
 

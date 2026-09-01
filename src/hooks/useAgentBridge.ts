@@ -3,7 +3,7 @@ import { documentDir, join, resourceDir } from "@tauri-apps/api/path";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import type {
   AgentProfile, AgentTask, ApprovalRequest, AutomationTrigger, BridgeRequest, BridgeResponse,
-  PlanApprovalRequest, Workflow, WorkflowRun,
+  FileTrigger, PlanApprovalRequest, Workflow, WorkflowRun,
 } from "../types";
 
 export type BridgeStatus = "connecting" | "connected" | "error" | "stopped";
@@ -17,6 +17,7 @@ export interface AgentBridge {
   workflows: Workflow[];
   workflowRuns: WorkflowRun[];
   triggers: AutomationTrigger[];
+  fileTriggers: FileTrigger[];
   error: string | null;
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
@@ -36,6 +37,9 @@ export interface AgentBridge {
   setTriggerEnabled: (triggerId: string, enabled: boolean) => Promise<void>;
   runTriggerNow: (triggerId: string) => Promise<void>;
   deleteTrigger: (triggerId: string) => Promise<void>;
+  createFileTrigger: (input: Omit<FileTrigger, "id" | "lastRunAt" | "lastRunId" | "error" | "trackedFiles">) => Promise<FileTrigger>;
+  setFileTriggerEnabled: (triggerId: string, enabled: boolean) => Promise<void>;
+  deleteFileTrigger: (triggerId: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -58,6 +62,7 @@ export function useAgentBridge(): AgentBridge {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
   const [triggers, setTriggers] = useState<AutomationTrigger[]>([]);
+  const [fileTriggers, setFileTriggers] = useState<FileTrigger[]>([]);
   const [error, setError] = useState<string | null>(null);
   const childRef = useRef<Child | null>(null);
   const pendingRef = useRef(new Map<string, PendingRequest>());
@@ -99,6 +104,7 @@ export function useAgentBridge(): AgentBridge {
       if (Array.isArray(message.payload.workflows)) setWorkflows(message.payload.workflows as unknown as Workflow[]);
       if (Array.isArray(message.payload.workflowRuns)) setWorkflowRuns(message.payload.workflowRuns as unknown as WorkflowRun[]);
       if (Array.isArray(message.payload.triggers)) setTriggers(message.payload.triggers as unknown as AutomationTrigger[]);
+      if (Array.isArray(message.payload.fileTriggers)) setFileTriggers(message.payload.fileTriggers as unknown as FileTrigger[]);
     }
     const task = message.payload?.task as AgentTask | undefined;
     if (task) upsertTask(task);
@@ -321,11 +327,31 @@ export function useAgentBridge(): AgentBridge {
     await send({ type: "list_state", payload: {} });
   }, [send]);
 
+  const createFileTrigger = useCallback(async (
+    input: Omit<FileTrigger, "id" | "lastRunAt" | "lastRunId" | "error" | "trackedFiles">,
+  ) => {
+    const response = await send({ type: "create_file_trigger", payload: input });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.fileTrigger as unknown as FileTrigger;
+  }, [send]);
+
+  const setFileTriggerEnabled = useCallback(async (triggerId: string, enabled: boolean) => {
+    await send({ type: "set_file_trigger_enabled", payload: { triggerId, enabled } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
+  const deleteFileTrigger = useCallback(async (triggerId: string) => {
+    await send({ type: "delete_file_trigger", payload: { triggerId } });
+    await send({ type: "list_state", payload: {} });
+  }, [send]);
+
   return {
-    status, tasks, approval, planApproval, agents, workflows, workflowRuns, triggers, error, send,
+    status, tasks, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
+    error, send,
     createTask, runTask, decideApproval, decidePlanApproval, createAgent, createWorkflow,
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
     runWorkflow, retryWorkflow, cancelWorkflow, createTrigger, setTriggerEnabled,
-    runTriggerNow, deleteTrigger, refresh,
+    runTriggerNow, deleteTrigger, createFileTrigger, setFileTriggerEnabled, deleteFileTrigger,
+    refresh,
   };
 }

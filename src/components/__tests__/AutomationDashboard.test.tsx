@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentBridge } from "../../hooks/useAgentBridge";
@@ -23,6 +23,7 @@ const bridge = {
   }],
   workflowRuns: [],
   triggers: [],
+  fileTriggers: [],
   error: null,
   send: vi.fn(), createTask: vi.fn(), runTask: vi.fn(), decideApproval: vi.fn(),
   decidePlanApproval: vi.fn(), createAgent: vi.fn(), createWorkflow: vi.fn(),
@@ -30,6 +31,7 @@ const bridge = {
   archiveWorkflow: vi.fn(), runWorkflow: vi.fn(), retryWorkflow: vi.fn(),
   cancelWorkflow: vi.fn(), createTrigger: vi.fn(), setTriggerEnabled: vi.fn(),
   runTriggerNow: vi.fn(), deleteTrigger: vi.fn(), refresh: vi.fn(),
+  createFileTrigger: vi.fn(), setFileTriggerEnabled: vi.fn(), deleteFileTrigger: vi.fn(),
 } as unknown as AgentBridge;
 
 describe("AutomationDashboard", () => {
@@ -60,6 +62,44 @@ describe("AutomationDashboard", () => {
       workflowId: "delivery", intervalMinutes: 60, goal: "Refresh the project report",
       targetFile: "scratch/report.md", enabled: true,
     }));
+  });
+
+  it("creates a guarded filesystem watch", async () => {
+    const user = userEvent.setup();
+    render(<AutomationDashboard bridge={bridge} />);
+
+    await user.click(screen.getByRole("button", { name: /watch files/i }));
+    expect(screen.getByRole("heading", { name: /watch files for safe delivery/i })).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/file or folder/i), "inbox");
+    fireEvent.change(screen.getByLabelText(/^goal/i), {
+      target: { value: "Review changed file: {file}" },
+    });
+    await user.click(screen.getByRole("button", { name: /create file watch/i }));
+
+    expect(bridge.createFileTrigger).toHaveBeenCalledWith({
+      workflowId: "delivery", name: "Safe delivery file watch", watchPath: "inbox",
+      pattern: "**/*", cooldownSeconds: 30, goal: "Review changed file: {file}",
+      enabled: true,
+    });
+  });
+
+  it("shows and pauses a persistent file watch", async () => {
+    const user = userEvent.setup();
+    const bridgeWithWatch = {
+      ...bridge,
+      fileTriggers: [{
+        id: "watch-1", workflowId: "delivery", name: "Inbox watch", watchPath: "inbox",
+        pattern: "**/*.md", cooldownSeconds: 30, goal: "Review {file}", enabled: true,
+        trackedFiles: 4,
+      }],
+    } as unknown as AgentBridge;
+    render(<AutomationDashboard bridge={bridgeWithWatch} />);
+
+    expect(screen.getByText("Inbox watch")).toBeInTheDocument();
+    expect(screen.getByText(/tracking 4 files/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /pause watch/i }));
+
+    expect(bridge.setFileTriggerEnabled).toHaveBeenCalledWith("watch-1", false);
   });
 
   it("configures a validation command without shell parsing", async () => {

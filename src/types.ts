@@ -80,6 +80,21 @@ export interface AutomationTrigger {
   error?: string;
 }
 
+export interface FileTrigger {
+  id: string;
+  workflowId: string;
+  name: string;
+  watchPath: string;
+  pattern: string;
+  cooldownSeconds: number;
+  goal: string;
+  enabled: boolean;
+  lastRunAt?: string;
+  lastRunId?: string;
+  error?: string;
+  trackedFiles: number;
+}
+
 export interface StepRun {
   id: string;
   workflowRunId: string;
