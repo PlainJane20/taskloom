@@ -95,10 +95,13 @@ Taskloom deliberately separates presentation, orchestration, policy, model acces
 ```mermaid
 flowchart LR
     User([User]) --> Studio[Automation Studio]
+    MCPHost[External MCP agent] -->|MCP v2 over stdio| MCPAdapter[Governed MCP adapter]
 
     subgraph Desktop[Taskloom desktop]
         Studio --> Bridge[useAgentBridge]
         Bridge <-->|JSONL over stdin / stdout| Engine[Python async engine]
+        MCPAdapter --> Governance[Confidence, idempotency<br/>and clustering gate]
+        Governance --> Engine
         Engine --> Registry[Agent registry]
         Engine --> Scheduler[Durable trigger scheduler]
         Scheduler --> Interval[Interval schedules]
@@ -142,6 +145,7 @@ The policy engine is the system's trust boundary: generated output can become an
 | Desktop | Tauri 2 + Rust | Native lifecycle, security capabilities, resource bundling, packaging |
 | Interface | React 18 + TypeScript + Tailwind CSS | Automation studio, agent/workflow forms, run history, board, approvals |
 | Bridge | Tauri shell plugin + JSONL | Asynchronous process lifecycle and language-neutral IPC |
+| Agent protocol | Official MCP v2 Python SDK + stdio | Governed external-agent task, progress, and trace ingestion |
 | Engine | Python 3.11+ + `asyncio` | Workflow dependencies, policy decisions, model calls, guarded commands, snapshots |
 | Persistence | SQLite with WAL | Restart-safe agents, workflows, triggers, baselines, runs, events, tasks, and approvals |
 | Providers | Ollama + OpenAI | Local-first generation with an opt-in cloud adapter |
@@ -166,7 +170,7 @@ cd taskloom
 npm ci
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt -r requirements-mcp.txt
 ```
 
 On Windows PowerShell, activate Python with `.venv\Scripts\Activate.ps1`.
@@ -223,6 +227,28 @@ test
 
 Set the timeout to `120` seconds and save. On the next run, Taskloom captures the test output, stops the workflow on a nonzero exit or timeout, and exposes the log directly in **Recent runs**. Equivalent configurations include `python3` / `-m` / `pytest` and `cargo` / `check`.
 
+### Connect an MCP agent
+
+Taskloom exposes `create_task`, `update_task`, `add_log`, and `get_board_state` through the official MCP v2 stdio transport. Point an MCP-compatible host at:
+
+```json
+{
+  "mcpServers": {
+    "taskloom": {
+      "command": "/absolute/path/to/taskloom/.venv/bin/python",
+      "args": [
+        "-m",
+        "engine.mcp_server",
+        "--workspace",
+        "/absolute/path/to/the/governed/workspace"
+      ]
+    }
+  }
+}
+```
+
+Agents must provide a stable idempotency key, agent/session identity, and a confidence score. Scores below `0.70` are routed to Drafts, repeated calls are idempotent, related events within the aggregation window become one progress card, and terminal output is bounded and secret-redacted before persistence.
+
 ## Configuration
 
 Taskloom uses environment variables so local secrets never need to enter the repository.
@@ -270,7 +296,7 @@ Taskloom treats generated responses as untrusted artifacts and applies the workf
 ## Testing and quality
 
 ```bash
-# Python IPC, orchestration, command gates, schedules, file watches, retry, persistence, and path-safety tests
+# Python IPC, MCP, governance, orchestration, command gates, persistence, and safety tests
 python -m pytest -q
 
 # React workflow, command-output, scheduling, file-change, and approval interaction tests
@@ -283,14 +309,15 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **50 automated tests**: 39 Python tests and 11 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **60 automated tests**: 49 Python/MCP tests and 11 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 
 ```text
 taskloom/
 ├── engine/
-│   └── main.py                         # Agents, workflow runner, policies, IPC, persistence
+│   ├── main.py                         # Agents, governance, workflows, IPC, persistence
+│   └── mcp_server.py                   # Official MCP v2 governed stdio adapter
 ├── src/
 │   ├── components/
 │   │   ├── AutomationDashboard.tsx      # Agents, workflows, schedules, file watches, run history
@@ -304,7 +331,9 @@ taskloom/
 │   ├── capabilities/default.json        # Restricted native permissions
 │   ├── icons/                           # Taskloom platform assets
 │   └── tauri.conf.json                  # Desktop and bundle configuration
-├── tests/test_engine.py                 # Python unit and integration suite
+├── tests/
+│   ├── test_engine.py                  # Python unit and integration suite
+│   └── test_mcp_server.py              # MCP schema and protocol integration tests
 ├── .github/workflows/ci.yml             # Continuous integration
 └── README.md
 ```
