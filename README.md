@@ -16,7 +16,7 @@
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
   [![Python](https://img.shields.io/badge/engine-Python-3776ab.svg)](https://www.python.org/)
 
-  [Why Taskloom](#why-taskloom) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Architecture](#architecture) · [Roadmap](#roadmap)
+  [Why Taskloom](#why-taskloom) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Architecture](#architecture) · [Roadmap](#roadmap) · [Contact](#contact)
 </div>
 
 ---
@@ -80,26 +80,33 @@ Create task       Generate locally       Review proposal       Apply safely
 
 Taskloom deliberately separates presentation, orchestration, and file authority. The React application never writes task output directly.
 
-```text
-┌──────────────────────────────── Taskloom Desktop ────────────────────────────────┐
-│                                                                                  │
-│  ┌─────────────────────────────┐       JSON Lines       ┌──────────────────────┐ │
-│  │ React + TypeScript          │ ◄────────────────────► │ Python engine        │ │
-│  │                             │      stdin/stdout       │                      │ │
-│  │ • KanbanBoard               │                        │ • Task state machine │ │
-│  │ • ApprovalModal             │                        │ • Workspace guard    │ │
-│  │ • useAgentBridge            │                        │ • Snapshot store     │ │
-│  └──────────────┬──────────────┘                        │ • Provider adapters  │ │
-│                 │                                       └──────────┬───────────┘ │
-│                 ▼                                                  │             │
-│        Tauri 2 native shell                                        │             │
-│        restricted process spawn                                    │             │
-└────────────────────────────────────────────────────────────────────┼─────────────┘
-                                                                     │
-                         ┌───────────────────────────────────────────┴──────┐
-                         │ Ollama (local)        OpenAI (optional cloud)   │
-                         └──────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    User([User]) --> Board[React Kanban board]
+
+    subgraph Desktop[Taskloom desktop]
+        Board --> Bridge[useAgentBridge]
+        Bridge <-->|JSONL over stdin / stdout| Engine[Python async engine]
+        Engine --> State[(SQLite task state)]
+        Engine --> Guard[Workspace path guard]
+    end
+
+    Engine --> Provider{Model provider}
+    Provider -->|Local-first| Ollama[Ollama]
+    Provider -->|Opt-in cloud| OpenAI[OpenAI API]
+    Ollama --> Proposal[Proposed file content]
+    OpenAI --> Proposal
+    Proposal --> Engine
+    Engine --> Review[Before / after approval modal]
+    Review --> Decision{Human decision}
+    Decision -->|Reject| Backlog[Return to Backlog<br/>No file write]
+    Decision -->|Approve| Snapshot[Create pre-write snapshot]
+    Snapshot --> Guard
+    Guard --> Write[Atomic guarded file write]
+    Write --> Complete[Move task to Completed]
 ```
+
+The approval modal is the system's trust boundary: provider output can become a proposal, but only an explicit human decision can authorize a filesystem mutation.
 
 ### Technology stack
 
@@ -286,6 +293,22 @@ Issues and focused pull requests are welcome.
 4. Open a pull request describing the user-facing impact and safety considerations.
 
 Please avoid committing model files, generated workspaces, `.taskloom/` state, or secrets.
+
+---
+
+## Contact
+
+<div align="center">
+
+### Navi Sohi
+
+*Technical Program Manager & Automation Engineer*
+
+<a href="https://www.linkedin.com/in/navisohi/"><img src="https://img.shields.io/badge/LINKEDIN-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn" /></a>
+<a href="https://github.com/PlainJane20"><img src="https://img.shields.io/badge/GITHUB-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub" /></a>
+<a href="mailto:nks.ai.dev@gmail.com"><img src="https://img.shields.io/badge/EMAIL-EA4335?style=for-the-badge&logo=gmail&logoColor=white" alt="Email" /></a>
+
+</div>
 
 ## License
 
