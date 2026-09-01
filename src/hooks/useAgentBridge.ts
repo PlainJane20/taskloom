@@ -51,6 +51,7 @@ export interface AgentBridge {
   }) => Promise<ProviderConnection>;
   testProviderConnection: (connectionId: string) => Promise<ProviderConnection>;
   syncProviderInbound: (connectionId: string) => Promise<{ imported: number; updated: number; unchanged: number }>;
+  syncTaskOutbound: (taskId: string, force?: boolean) => Promise<SyncEvent[]>;
   refresh: () => Promise<void>;
 }
 
@@ -401,6 +402,12 @@ export function useAgentBridge(): AgentBridge {
     };
   }, [send]);
 
+  const syncTaskOutbound = useCallback(async (taskId: string, force = false) => {
+    const response = await send({ type: "sync_task_outbound", payload: { taskId, force } });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.events as unknown as SyncEvent[];
+  }, [send]);
+
   return {
     status, tasks, sessions, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
     providerConnections, syncEvents, externalIssueLinks,
@@ -411,6 +418,7 @@ export function useAgentBridge(): AgentBridge {
     runTriggerNow, deleteTrigger, createFileTrigger, setFileTriggerEnabled, deleteFileTrigger,
     createProviderConnection, testProviderConnection,
     syncProviderInbound,
+    syncTaskOutbound,
     refresh,
   };
 }

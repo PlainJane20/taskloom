@@ -14,9 +14,11 @@ class FakeGitHubProvider:
         issues: list[ExternalIssue] | None = None,
     ) -> None:
         self.failure = failure
+        self.outbound_failure: ProviderError | None = None
         self.issues = issues or []
         self.tested: list[str] = []
         self.listed: list[str] = []
+        self.closed: list[tuple[str, int]] = []
 
     async def test_connection(self, repository: str) -> dict[str, str]:
         self.tested.append(repository)
@@ -30,8 +32,21 @@ class FakeGitHubProvider:
             raise self.failure
         return self.issues
 
-    async def close_issue(self, repository: str, issue_number: int) -> object:
-        raise NotImplementedError
+    async def get_issue(self, repository: str, issue_number: int) -> ExternalIssue:
+        if self.outbound_failure:
+            raise self.outbound_failure
+        return next(issue for issue in self.issues if issue.number == issue_number)
+
+    async def close_issue(self, repository: str, issue_number: int) -> ExternalIssue:
+        if self.outbound_failure:
+            raise self.outbound_failure
+        self.closed.append((repository, issue_number))
+        current = await self.get_issue(repository, issue_number)
+        closed = ExternalIssue(**{
+            **current.__dict__, "state": "closed", "updated_at": "2026-09-01T14:00:00Z",
+        })
+        self.issues = [closed if item.number == issue_number else item for item in self.issues]
+        return closed
 
 
 @pytest.mark.parametrize(
@@ -204,3 +219,91 @@ async def test_inbound_sync_requires_connected_inbound_connection(tmp_path: Path
         await engine.handle({
             "type": "sync_provider_inbound", "payload": {"connectionId": "github-main"},
         })
+
+
+async def _engine_with_imported_issue(
+    tmp_path: Path, provider: FakeGitHubProvider,
+) -> tuple[TaskloomEngine, str]:
+    engine = TaskloomEngine(tmp_path, providers={"github": provider})
+    await engine.handle({
+        "type": "create_provider_connection",
+        "payload": {"connectionId": "github-main", "provider": "github", "repository": "acme/app"},
+    })
+    await engine.handle({
+        "type": "test_provider_connection", "payload": {"connectionId": "github-main"},
+    })
+    await engine.handle({
+        "type": "sync_provider_inbound", "payload": {"connectionId": "github-main"},
+    })
+    return engine, next(iter(engine.tasks))
+
+
+def _outbound_issue() -> ExternalIssue:
+    return ExternalIssue(
+        external_id="9002", number=18, title="Close me when delivered",
+        body="Two-way state synchronization.", state="open",
+        url="https://github.com/acme/app/issues/18",
+        updated_at="2026-09-01T12:00:00Z",
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_imported_task_closes_linked_github_issue(tmp_path: Path) -> None:
+    provider = FakeGitHubProvider(issues=[_outbound_issue()])
+    engine, task_id = await _engine_with_imported_issue(tmp_path, provider)
+
+    await engine.handle({
+        "type": "update_task", "payload": {"taskId": task_id, "status": "completed"},
+    })
+
+    assert provider.closed == [("acme/app", 18)]
+    link = next(iter(engine.external_issue_links.values()))
+    assert link.external_state == "closed"
+    event = engine.sync_events[0]
+    assert event.direction == "outbound"
+    assert event.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_remote_edit_creates_conflict_instead_of_closing_issue(tmp_path: Path) -> None:
+    provider = FakeGitHubProvider(issues=[_outbound_issue()])
+    engine, task_id = await _engine_with_imported_issue(tmp_path, provider)
+    provider.issues = [ExternalIssue(**{
+        **_outbound_issue().__dict__, "body": "Edited remotely",
+        "updated_at": "2026-09-01T13:00:00Z",
+    })]
+
+    await engine.handle({
+        "type": "update_task", "payload": {"taskId": task_id, "status": "completed"},
+    })
+
+    assert provider.closed == []
+    assert engine.sync_events[0].status == "conflict"
+    assert "changed on GitHub" in engine.sync_events[0].message
+
+
+@pytest.mark.asyncio
+async def test_retryable_provider_failure_is_queued_and_retried(tmp_path: Path) -> None:
+    provider = FakeGitHubProvider(issues=[_outbound_issue()])
+    engine, task_id = await _engine_with_imported_issue(tmp_path, provider)
+    provider.outbound_failure = ProviderError(
+        "github_rate_limited", "GitHub rate limit exceeded.", retryable=True,
+    )
+
+    await engine.handle({
+        "type": "update_task", "payload": {"taskId": task_id, "status": "completed"},
+    })
+    queued = engine.sync_events[0]
+    assert queued.status == "queued"
+    assert queued.attempt_count == 1
+    assert queued.next_retry_at is not None
+
+    provider.outbound_failure = None
+    queued.next_retry_at = "2020-01-01T00:00:00+00:00"
+    engine.state.save_sync_event(queued)
+    retried = await engine.run_due_provider_retries()
+
+    assert len(retried) == 1
+    assert retried[0].status == "completed"
+    assert retried[0].attempt_count == 2
+    assert provider.closed == [("acme/app", 18)]

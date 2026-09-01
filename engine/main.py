@@ -2011,11 +2011,12 @@ class TaskloomEngine:
         """Keep interval and filesystem triggers active while the engine is running."""
         poll_seconds = max(5, int(os.environ.get("TASKLOOM_SCHEDULER_POLL_SECONDS", "15")))
         while True:
-            scheduled, watched = await asyncio.gather(
+            scheduled, watched, provider_retries = await asyncio.gather(
                 self.run_due_triggers(), self.run_due_file_triggers(),
+                self.run_due_provider_retries(),
             )
             started = [*scheduled, *watched]
-            if started:
+            if started or provider_retries:
                 await emit({"type": "state_snapshot", "payload": self.state_payload()})
             await asyncio.sleep(poll_seconds)
 
@@ -2551,6 +2552,119 @@ class TaskloomEngine:
         self.sync_events = self.state.load_sync_events()
         return {"imported": imported, "updated": updated, "unchanged": unchanged}
 
+    async def _close_external_issue(
+        self,
+        task: Task,
+        link: ExternalIssueLink,
+        connection: ProviderConnection,
+        *,
+        event: SyncEvent | None = None,
+        force: bool = False,
+    ) -> SyncEvent:
+        adapter = self.providers.get(connection.provider)
+        if adapter is None:
+            raise ProtocolError(
+                "unsupported_provider", f"Unsupported issue provider: {connection.provider}",
+            )
+        event = event or SyncEvent(
+            id=str(uuid.uuid4()), connection_id=connection.id, direction="outbound",
+            action="close_issue", status="running",
+            message=f"Closing {connection.repository}#{link.issue_number}",
+            task_id=task.id, external_id=link.external_id,
+        )
+        event.status = "running"
+        event.attempt_count += 1
+        event.next_retry_at = None
+        self.state.save_sync_event(event)
+        try:
+            remote = await adapter.get_issue(connection.repository, link.issue_number)
+            if remote.state == "closed":
+                closed = remote
+                message = f"{connection.repository}#{link.issue_number} was already closed"
+            elif (not force and link.external_updated_at and remote.updated_at
+                  and remote.updated_at != link.external_updated_at):
+                event.status = "conflict"
+                event.message = (
+                    f"{connection.repository}#{link.issue_number} changed on GitHub; "
+                    "import the latest issue before closing it."
+                )
+                event.completed_at = datetime.now(timezone.utc).isoformat()
+                self.state.save_sync_event(event)
+                return event
+            else:
+                closed = await adapter.close_issue(connection.repository, link.issue_number)
+                message = f"Closed {connection.repository}#{link.issue_number}"
+            now = datetime.now(timezone.utc).isoformat()
+            link.external_state = closed.state
+            link.external_updated_at = closed.updated_at
+            link.last_synced_at = now
+            self.state.save_external_issue_link(link)
+            connection.status = "connected"
+            connection.error = None
+            connection.last_sync_at = now
+            self.state.save_provider_connection(connection)
+            event.status = "completed"
+            event.message = message
+            event.completed_at = now
+        except ProviderError as exc:
+            event.message = str(exc)
+            if exc.retryable and event.attempt_count < 5:
+                delay_minutes = min(2 ** event.attempt_count, 60)
+                event.status = "queued"
+                event.next_retry_at = (
+                    datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
+                ).isoformat()
+            else:
+                event.status = "failed"
+                event.completed_at = datetime.now(timezone.utc).isoformat()
+            connection.error = str(exc)
+            self.state.save_provider_connection(connection)
+        self.state.save_sync_event(event)
+        return event
+
+    async def sync_completed_task_outbound(
+        self, task: Task, *, force: bool = False,
+    ) -> list[SyncEvent]:
+        if task.status != "completed":
+            return []
+        completed_events: list[SyncEvent] = []
+        links = [link for link in self.external_issue_links.values() if link.task_id == task.id]
+        for link in links:
+            if link.external_state == "closed" and not force:
+                continue
+            connection = self.provider_connections.get(link.connection_id)
+            if (connection is None or not connection.enabled or not connection.auto_close
+                    or connection.sync_direction == "inbound"):
+                continue
+            completed_events.append(await self._close_external_issue(
+                task, link, connection, force=force,
+            ))
+        self.sync_events = self.state.load_sync_events()
+        return completed_events
+
+    async def run_due_provider_retries(self) -> list[SyncEvent]:
+        now = datetime.now(timezone.utc)
+        retried: list[SyncEvent] = []
+        for event in self.state.load_sync_events(limit=500):
+            if event.status != "queued" or not event.next_retry_at:
+                continue
+            if datetime.fromisoformat(event.next_retry_at) > now:
+                continue
+            task = self.tasks.get(event.task_id or "")
+            link = self.external_issue_links.get((event.connection_id, event.external_id or ""))
+            connection = self.provider_connections.get(event.connection_id)
+            if task is None or link is None or connection is None:
+                event.status = "failed"
+                event.message = "Retry target no longer exists."
+                event.completed_at = now.isoformat()
+                self.state.save_sync_event(event)
+                retried.append(event)
+                continue
+            retried.append(await self._close_external_issue(task, link, connection, event=event))
+        if retried:
+            self.sync_events = self.state.load_sync_events()
+        return retried
+
     async def handle(self, message: dict[str, Any]) -> list[dict[str, Any]]:
         request_id = message.get("id")
         kind = message["type"]
@@ -2650,14 +2764,29 @@ class TaskloomEngine:
                 request_id, "provider_sync_completed",
                 {"connection": self.serialize_provider_connection(connection), "summary": summary},
             ), {"type": "state_snapshot", "payload": self.state_payload()}]
+        if kind == "sync_task_outbound":
+            self._require(payload, "taskId")
+            task = self.tasks.get(str(payload["taskId"]))
+            if task is None:
+                raise ProtocolError("task_not_found", "Task does not exist.")
+            events = await self.sync_completed_task_outbound(
+                task, force=bool(payload.get("force", False)),
+            )
+            return [self._response(
+                request_id, "provider_sync_completed",
+                {"events": [self.serialize_sync_event(event) for event in events]},
+            ), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "ingest_create_task":
             return [self._response(
                 request_id, "governed_task_ingested", self.ingest_create_task(payload),
             )]
         if kind == "ingest_update_task":
+            result = self.ingest_update_task(payload)
+            task = self.tasks[result["task"]["id"]]
+            await self.sync_completed_task_outbound(task)
             return [self._response(
-                request_id, "governed_task_updated", self.ingest_update_task(payload),
-            )]
+                request_id, "governed_task_updated", result,
+            ), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "ingest_add_log":
             return [self._response(
                 request_id, "governed_log_ingested", self.ingest_add_log(payload),
@@ -2691,7 +2820,10 @@ class TaskloomEngine:
         if kind == "update_task":
             self._require(payload, "taskId", "status")
             task = self.update_task(str(payload["taskId"]), str(payload["status"]))
-            return [self._response(request_id, "task_updated", {"task": self.serialize_task(task)})]
+            await self.sync_completed_task_outbound(task)
+            return [self._response(
+                request_id, "task_updated", {"task": self.serialize_task(task)},
+            ), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "run_task":
             self._require(payload, "taskId")
             task = self.update_task(str(payload["taskId"]), "active", error=None)
@@ -3126,6 +3258,8 @@ class TaskloomEngine:
                     self.state.save_step_run(step)
                     self.state.save_workflow_run(run)
                     self._record_event(run.id, "change_rejected", f"Rejected {step.name}", step.id)
+            if decision == "approve":
+                await self.sync_completed_task_outbound(task)
             return [self._response(
                 request_id, "task_updated",
                 {"task": self.serialize_task(task), "snapshotId": snapshot_id},

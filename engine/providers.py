@@ -44,6 +44,8 @@ class IssueProvider(Protocol):
 
     async def list_open_issues(self, repository: str) -> list[ExternalIssue]: ...
 
+    async def get_issue(self, repository: str, issue_number: int) -> ExternalIssue: ...
+
     async def close_issue(self, repository: str, issue_number: int) -> ExternalIssue: ...
 
 
@@ -146,6 +148,16 @@ class GitHubCLIAdapter:
             "api", f"repos/{repository}/issues/{issue_number}",
             "--method", "PATCH", "-f", "state=closed",
         )
+        try:
+            return self._issue_from_payload(json.loads(raw))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ProviderError("invalid_provider_response", "GitHub returned invalid issue data.") from exc
+
+    async def get_issue(self, repository: str, issue_number: int) -> ExternalIssue:
+        repository = validate_repository(repository)
+        if issue_number < 1:
+            raise ProviderError("invalid_issue_number", "GitHub issue number must be positive.")
+        raw = await self._run("api", f"repos/{repository}/issues/{issue_number}")
         try:
             return self._issue_from_payload(json.loads(raw))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:

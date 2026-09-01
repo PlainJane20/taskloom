@@ -192,7 +192,7 @@ export interface SyncEvent {
   connectionId: string;
   direction: "inbound" | "outbound" | "system";
   action: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "conflict";
   message: string;
   taskId?: string | null;
   externalId?: string | null;
