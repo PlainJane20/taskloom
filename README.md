@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.4.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0)
+  [![Release](https://img.shields.io/badge/release-v0.5.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.5.0)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.4 is a working multi-agent automation platform. Reusable agents, editable dependency-aware workflows, durable interval schedules, guarded test-command gates, four autonomy policies, retryable execution history, local model generation, human approvals, and snapshots are implemented and tested.
+> **Project status:** Taskloom v0.5 is a working multi-agent automation platform. Reusable agents, editable dependency-aware workflows, durable interval and filesystem triggers, guarded test-command gates, four autonomy policies, retryable execution history, local model generation, human approvals, and snapshots are implemented and tested.
 
 ## Why Taskloom
 
@@ -34,6 +34,7 @@ Taskloom moves those controls into a desktop automation studio:
 - **Choose the safety policy** — Observe, Approve Changes, Approve Plan, or Trusted automation.
 - **See the work** — inspect every workflow run, agent step, result, failure, and approval.
 - **Automate recurring work** — schedule workflows, pause them, run them on demand, and retry transient failures.
+- **React to local changes** — watch files or filtered folders and launch the right guarded workflow automatically.
 - **Keep data local** — Ollama runs supported models on the user's machine.
 - **Recover safely** — every automated write remains workspace-confined, atomic, and snapshotted.
 - **Resume seamlessly** — SQLite restores agents, workflows, runs, steps, tasks, and approvals.
@@ -43,11 +44,11 @@ Taskloom is not another model competing with coding agents. It is the visual pol
 ## How it works
 
 ```text
-Goal / Schedule → Workflow → Planner → Builder → Validator → Reviewer → Result
-       │             │                      │
-       │             │                      └── guarded file proposal
-       │             ▼
-       └──────► Durable trigger
+Goal / Schedule / File change → Workflow → Planner → Builder → Validator → Reviewer → Result
+             │                   │                      │
+             │                   │                      └── guarded file proposal
+             │                   ▼
+             └────────────► Durable trigger
                      │
   Automation policy
   ├── Observe ────────────────► report only; never write
@@ -71,6 +72,7 @@ Goal / Schedule → Workflow → Planner → Builder → Validator → Reviewer 
 | Multi-step automation | Planner → Builder → Validator → Reviewer workflows with explicit dependencies |
 | Workflow operations | Create, edit, duplicate, pause, archive, run, cancel, and retry workflows visually |
 | Durable schedules | Persistent interval triggers with pause/resume, run-now, next-run, and failure state |
+| Filesystem automation | Restart-safe file/folder watches with wildcard filters, cooldowns, baselines, and loop suppression |
 | Command quality gates | Shell-free test commands with executable allowlisting, timeouts, bounded output, and visual logs |
 | Graduated autonomy | Observe, Approve Changes, Approve Plan, and Trusted execution policies |
 | Durable execution history | Workflow, step, and append-only execution events survive restarts with outputs and errors |
@@ -98,8 +100,11 @@ flowchart LR
         Studio --> Bridge[useAgentBridge]
         Bridge <-->|JSONL over stdin / stdout| Engine[Python async engine]
         Engine --> Registry[Agent registry]
-        Engine --> Scheduler[Durable interval scheduler]
-        Scheduler --> Runner[Dependency-aware workflow runner]
+        Engine --> Scheduler[Durable trigger scheduler]
+        Scheduler --> Interval[Interval schedules]
+        Scheduler --> Watcher[Filtered filesystem watcher]
+        Interval --> Runner[Dependency-aware workflow runner]
+        Watcher --> Runner
         Engine --> Runner
         Runner --> Policy{Automation policy}
         Engine --> State[(SQLite durable state)]
@@ -138,7 +143,7 @@ The policy engine is the system's trust boundary: generated output can become an
 | Interface | React 18 + TypeScript + Tailwind CSS | Automation studio, agent/workflow forms, run history, board, approvals |
 | Bridge | Tauri shell plugin + JSONL | Asynchronous process lifecycle and language-neutral IPC |
 | Engine | Python 3.11+ + `asyncio` | Workflow dependencies, policy decisions, model calls, guarded commands, snapshots |
-| Persistence | SQLite with WAL | Restart-safe agents, workflows, schedules, runs, events, tasks, and approvals |
+| Persistence | SQLite with WAL | Restart-safe agents, workflows, triggers, baselines, runs, events, tasks, and approvals |
 | Providers | Ollama + OpenAI | Local-first generation with an opt-in cloud adapter |
 | Testing | pytest + Vitest + React Testing Library | Unit, integration, persistence, and user-interaction coverage |
 
@@ -194,7 +199,20 @@ Target file: scratch/automation-demo.md
 
 Select **Start workflow**, inspect the four-step plan, then choose **Approve & run**. The run history shows each agent handoff and its final status.
 
-### 5. Add a real test gate
+### 5. Automate a workflow from file changes
+
+Choose **Watch files** on a workflow and enter:
+
+```text
+Workspace-relative file or folder: inbox
+File pattern: **/*.md
+Cooldown: 30 seconds
+Goal: Review and process the changed file: {file}
+```
+
+Taskloom first records the current files as a baseline. A later matching change starts the workflow with the changed path as its target while preserving the workflow's Observe, approval, or Trusted policy. File watches run only while Taskloom is open.
+
+### 6. Add a real test gate
 
 Choose **Edit** on the workflow, find its **Validate** step, and enter one argument per line:
 
@@ -214,13 +232,15 @@ Taskloom uses environment variables so local secrets never need to enter the rep
 | `TASKLOOM_OLLAMA_MODEL` | `llama3.2` | Ollama model used for generation |
 | `TASKLOOM_OLLAMA_URL` | `http://127.0.0.1:11434/api/generate` | Local Ollama endpoint |
 | `TASKLOOM_OLLAMA_KEEP_ALIVE` | `0` | Model retention after generation; `0` unloads immediately |
-| `TASKLOOM_SCHEDULER_POLL_SECONDS` | `15` | How often the local engine checks for due schedules; minimum `5` |
+| `TASKLOOM_SCHEDULER_POLL_SECONDS` | `15` | How often the local engine checks schedules and file watches; minimum `5` |
 | `OPENAI_API_KEY` | unset | Enables the optional OpenAI provider |
 | `TASKLOOM_OPENAI_MODEL` | `gpt-4o-mini` | Model used by the current OpenAI adapter |
 
 Development mode treats the checked-out repository as its workspace. Packaged builds use `~/Documents/TaskloomWorkspace`. Runtime state lives under `.taskloom/` inside the active workspace and is excluded from Git.
 
 Schedules are local-first: they run only while the Taskloom desktop engine is open. A due interval is executed at most once per poll, then advanced to its next deadline to prevent restart catch-up storms.
+
+File watches are also local-first. They store file modification metadata rather than file contents, ignore generated and internal directories, skip symbolic links, enforce cooldowns, and monitor at most 2,000 matching files per watch. Taskloom baselines existing files before activation and refreshes its own output after a run to prevent write-trigger loops.
 
 Validation commands are entered as an executable plus one argument per line. Taskloom never invokes a shell, accepts only an explicit executable allowlist, rejects absolute and parent-relative arguments, runs from the workspace root with a sanitized environment, captures at most 64 KiB of output, and enforces a 1–900 second timeout. Commands are user-configured local programs and should still be reviewed before use.
 
@@ -238,6 +258,7 @@ Taskloom treats generated responses as untrusted artifacts and applies the workf
 | Rejected proposal | Pending content is deleted and the original file remains unchanged |
 | Authorized mutation | A snapshot is created before content is atomically written |
 | Resource contention | One engine lock serializes model work to prevent concurrent local inference spikes |
+| Filesystem trigger | Baseline-first activation, directory exclusions, symlink skipping, file-count cap, cooldown, and self-write suppression |
 | Interrupted run | Active steps recover to a resumable queued state after restart |
 | Interrupted approval | File and plan approvals survive process and application restarts |
 | Secret handling | Cloud credentials are read from environment variables and never stored in board state |
@@ -249,7 +270,7 @@ Taskloom treats generated responses as untrusted artifacts and applies the workf
 ## Testing and quality
 
 ```bash
-# Python IPC, orchestration, command gates, scheduling, retry, persistence, and path-safety tests
+# Python IPC, orchestration, command gates, schedules, file watches, retry, persistence, and path-safety tests
 python -m pytest -q
 
 # React workflow, command-output, scheduling, file-change, and approval interaction tests
@@ -262,7 +283,7 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **42 automated tests**: 33 Python tests and 9 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **50 automated tests**: 39 Python tests and 11 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 
@@ -272,7 +293,7 @@ taskloom/
 │   └── main.py                         # Agents, workflow runner, policies, IPC, persistence
 ├── src/
 │   ├── components/
-│   │   ├── AutomationDashboard.tsx      # Agent team, workflow controls, schedules, run history
+│   │   ├── AutomationDashboard.tsx      # Agents, workflows, schedules, file watches, run history
 │   │   ├── PlanApprovalModal.tsx        # Approve-once workflow boundary
 │   │   ├── KanbanBoard.tsx              # Individual task workflow
 │   │   └── ApprovalModal.tsx            # Before/after mutation boundary
@@ -313,11 +334,12 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [x] Durable interval schedules with run-now and pause/resume controls
 - [x] Retryable failed runs and append-only execution event timelines
 - [x] Guarded validation commands with timeouts, output capture, and visual logs
+- [x] Durable filesystem triggers with wildcard filters, cooldowns, and loop suppression
 - [ ] Task editing, deletion, filtering, and run history
 - [ ] In-app workspace and model settings
 - [ ] Syntax-aware diffs with line-level navigation
 - [ ] Custom structured validation rules beyond process exit status
-- [ ] Filesystem, GitHub, and webhook triggers
+- [ ] GitHub and webhook triggers
 - [ ] Parallel branches with configurable resource budgets
 - [ ] Snapshot browser and one-click restoration
 - [ ] Compiled Python sidecar for zero-dependency installation
@@ -332,8 +354,8 @@ Taskloom demonstrates several production-oriented software engineering challenge
 - Designed a language-neutral asynchronous JSONL protocol that keeps a React/Tauri interface responsive while a long-running Python orchestration engine coordinates model work.
 - Implemented a persistent multi-agent workflow runtime with explicit dependency resolution, agent-to-agent artifacts, guarded test-command gates, cancellation, and restart recovery.
 - Built a policy-driven mutation interceptor supporting four autonomy levels while preserving canonical path containment, atomic writes, durable approvals, and pre-write snapshots.
-- Coordinated state across React, a Python workflow state machine, and nine SQLite tables while serializing local inference to control CPU/GPU pressure.
-- Established 42 automated tests and cross-language CI gates covering Python, React, TypeScript, and Rust.
+- Coordinated state across React, a Python workflow state machine, and ten SQLite tables while serializing local inference to control CPU/GPU pressure.
+- Established 50 automated tests and cross-language CI gates covering Python, React, TypeScript, and Rust.
 
 ## Contributing
 

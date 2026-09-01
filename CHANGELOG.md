@@ -3,6 +3,24 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-09-01
+
+### Added
+
+- Durable filesystem triggers for individual files or wildcard-filtered folders.
+- Visual file-watch creation, status, activity, pause/resume, and deletion controls.
+- `{file}` goal templates that route the changed workspace-relative path into a workflow run.
+- Restart-safe watch baselines, last-run metadata, and trigger errors in SQLite.
+
+### Safety
+
+- Records a baseline before enabling a watch, so existing files do not cause surprise runs.
+- Enforces a 15-second minimum cooldown and starts at most one changed file per watch poll.
+- Ignores `.git`, `.taskloom`, virtual environments, dependency folders, caches, and build output.
+- Caps each watch at 2,000 matching files and skips symbolic links.
+- Refreshes the triggering file's baseline after a workflow write to prevent feedback loops.
+- Preserves workspace path containment and every workflow's existing approval policy.
+
 ## [0.4.0] - 2026-09-01
 
 ### Added
@@ -58,6 +76,7 @@ All notable Taskloom changes are documented here. This project follows
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
 [0.4.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0
+[0.5.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.5.0
 [0.3.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.3.0
 [0.2.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.2.0
 [0.1.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.1.0
