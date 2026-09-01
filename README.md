@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.5.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.5.0)
+  [![Release](https://img.shields.io/badge/release-v0.6.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.6.0)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -364,11 +364,16 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [x] Retryable failed runs and append-only execution event timelines
 - [x] Guarded validation commands with timeouts, output capture, and visual logs
 - [x] Durable filesystem triggers with wildcard filters, cooldowns, and loop suppression
+- [x] Official MCP v2 governed task, progress, trace, and cooperative-control tools
+- [x] Confidence gating, idempotency, short-window clustering, and optimistic versions
+- [x] Agent/session/branch swimlanes, collision warnings, trace viewer, and Git/PR badges
 - [ ] Task editing, deletion, filtering, and run history
 - [ ] In-app workspace and model settings
 - [ ] Syntax-aware diffs with line-level navigation
 - [ ] Custom structured validation rules beyond process exit status
 - [ ] GitHub and webhook triggers
+- [ ] Bidirectional GitHub Issues, Linear, and Jira provider adapters
+- [ ] Provider webhook signature verification, delivery ledger, and reconciliation queue
 - [ ] Parallel branches with configurable resource budgets
 - [ ] Snapshot browser and one-click restoration
 - [ ] Compiled Python sidecar for zero-dependency installation

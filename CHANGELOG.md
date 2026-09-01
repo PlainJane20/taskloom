@@ -3,6 +3,31 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-09-01
+
+### Added
+
+- Official MCP v2 stdio server with structured `create_task`, `update_task`, `add_log`, and board-state tools.
+- Migration-safe agent sessions, task worklogs, bounded execution traces, ingestion events, and Git/PR links.
+- Confidence gating that routes autonomous work below `0.70` to Drafts / Pending Review.
+- Idempotent ingestion and 30-second correlation clustering with `X of Y subtasks done` progress.
+- Session, agent, and branch swimlanes with real-time status badges and cross-agent directory collision warnings.
+- One-click terminal trace viewer, confidence badges, progress bars, and actionable commit/PR metadata.
+- Capability-gated cooperative pause, resume, and stop controls with a pollable MCP control state.
+
+### Safety
+
+- Keeps every MCP operation behind the same workspace guard and durable governance service as desktop IPC.
+- Redacts common token, password, secret, API-key, and bearer-authorization patterns before persistence.
+- Truncates stdout and stderr previews to 64 KiB and hashes persisted trace content for integrity checks.
+- Uses stable idempotency keys and optimistic task versions to prevent duplicate or stale agent mutations.
+- Preserves existing v0.1-v0.5 SQLite data through additive schema migration 6.
+
+### Verification
+
+- Expands automated coverage to 65 tests, including real MCP subprocess/stdio discovery.
+- Verifies Python/MCP, React interaction, optimized TypeScript, and native Rust builds.
+
 ## [0.5.0] - 2026-09-01
 
 ### Added
@@ -76,6 +101,7 @@ All notable Taskloom changes are documented here. This project follows
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
 [0.4.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0
+[0.6.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.6.0
 [0.5.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.5.0
 [0.3.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.3.0
 [0.2.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.2.0
