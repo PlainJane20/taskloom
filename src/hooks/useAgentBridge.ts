@@ -3,7 +3,8 @@ import { documentDir, join, resourceDir } from "@tauri-apps/api/path";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import type {
   AgentProfile, AgentSession, AgentTask, ApprovalRequest, AutomationTrigger, BridgeRequest, BridgeResponse,
-  FileTrigger, PlanApprovalRequest, ProviderConnection, SyncDirection, SyncEvent, Workflow, WorkflowRun,
+  ExternalIssueLink, FileTrigger, PlanApprovalRequest, ProviderConnection, SyncDirection, SyncEvent,
+  Workflow, WorkflowRun,
 } from "../types";
 
 export type BridgeStatus = "connecting" | "connected" | "error" | "stopped";
@@ -21,6 +22,7 @@ export interface AgentBridge {
   fileTriggers: FileTrigger[];
   providerConnections: ProviderConnection[];
   syncEvents: SyncEvent[];
+  externalIssueLinks: ExternalIssueLink[];
   error: string | null;
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
@@ -48,6 +50,7 @@ export interface AgentBridge {
     provider: "github"; repository: string; syncDirection: SyncDirection; autoClose: boolean;
   }) => Promise<ProviderConnection>;
   testProviderConnection: (connectionId: string) => Promise<ProviderConnection>;
+  syncProviderInbound: (connectionId: string) => Promise<{ imported: number; updated: number; unchanged: number }>;
   refresh: () => Promise<void>;
 }
 
@@ -74,6 +77,7 @@ export function useAgentBridge(): AgentBridge {
   const [fileTriggers, setFileTriggers] = useState<FileTrigger[]>([]);
   const [providerConnections, setProviderConnections] = useState<ProviderConnection[]>([]);
   const [syncEvents, setSyncEvents] = useState<SyncEvent[]>([]);
+  const [externalIssueLinks, setExternalIssueLinks] = useState<ExternalIssueLink[]>([]);
   const [error, setError] = useState<string | null>(null);
   const childRef = useRef<Child | null>(null);
   const pendingRef = useRef(new Map<string, PendingRequest>());
@@ -124,6 +128,9 @@ export function useAgentBridge(): AgentBridge {
       }
       if (Array.isArray(message.payload.syncEvents)) {
         setSyncEvents(message.payload.syncEvents as unknown as SyncEvent[]);
+      }
+      if (Array.isArray(message.payload.externalIssueLinks)) {
+        setExternalIssueLinks(message.payload.externalIssueLinks as unknown as ExternalIssueLink[]);
       }
     }
     const task = message.payload?.task as AgentTask | undefined;
@@ -386,15 +393,24 @@ export function useAgentBridge(): AgentBridge {
     return response.payload?.connection as unknown as ProviderConnection;
   }, [send]);
 
+  const syncProviderInbound = useCallback(async (connectionId: string) => {
+    const response = await send({ type: "sync_provider_inbound", payload: { connectionId } });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.summary as unknown as {
+      imported: number; updated: number; unchanged: number;
+    };
+  }, [send]);
+
   return {
     status, tasks, sessions, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
-    providerConnections, syncEvents,
+    providerConnections, syncEvents, externalIssueLinks,
     error, send,
     createTask, runTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
     runWorkflow, retryWorkflow, cancelWorkflow, createTrigger, setTriggerEnabled,
     runTriggerNow, deleteTrigger, createFileTrigger, setFileTriggerEnabled, deleteFileTrigger,
     createProviderConnection, testProviderConnection,
+    syncProviderInbound,
     refresh,
   };
 }

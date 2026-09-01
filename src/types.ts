@@ -202,6 +202,18 @@ export interface SyncEvent {
   completedAt?: string | null;
 }
 
+export interface ExternalIssueLink {
+  id: string;
+  taskId: string;
+  connectionId: string;
+  externalId: string;
+  issueNumber: number;
+  url: string;
+  externalState: "open" | "closed" | string;
+  externalUpdatedAt: string;
+  lastSyncedAt: string;
+}
+
 export interface StepRun {
   id: string;
   workflowRunId: string;

@@ -285,6 +285,19 @@ class SyncEvent:
     completed_at: str | None = None
 
 
+@dataclass
+class ExternalIssueLink:
+    id: str
+    task_id: str
+    connection_id: str
+    external_id: str
+    issue_number: int
+    url: str
+    external_state: str
+    external_updated_at: str
+    last_synced_at: str
+
+
 class StateStore:
     """Durable SQLite storage for board state and unresolved approvals."""
 
@@ -543,6 +556,21 @@ class StateStore:
                 created_at TEXT NOT NULL,
                 completed_at TEXT,
                 FOREIGN KEY(connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS external_issue_links (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                url TEXT NOT NULL,
+                external_state TEXT NOT NULL,
+                external_updated_at TEXT NOT NULL,
+                last_synced_at TEXT NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE,
+                UNIQUE(connection_id, external_id)
             );
             """
         )
@@ -1173,6 +1201,37 @@ class StateStore:
                  event.next_retry_at, event.created_at, event.completed_at),
             )
 
+    def load_external_issue_links(self) -> list[ExternalIssueLink]:
+        rows = self.connection.execute(
+            """SELECT id, task_id, connection_id, external_id, issue_number, url,
+                      external_state, external_updated_at, last_synced_at
+                 FROM external_issue_links ORDER BY last_synced_at, rowid"""
+        ).fetchall()
+        return [ExternalIssueLink(
+            id=row["id"], task_id=row["task_id"], connection_id=row["connection_id"],
+            external_id=row["external_id"], issue_number=row["issue_number"], url=row["url"],
+            external_state=row["external_state"],
+            external_updated_at=row["external_updated_at"],
+            last_synced_at=row["last_synced_at"],
+        ) for row in rows]
+
+    def save_external_issue_link(self, link: ExternalIssueLink) -> None:
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO external_issue_links
+                   (id, task_id, connection_id, external_id, issue_number, url,
+                    external_state, external_updated_at, last_synced_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(connection_id, external_id) DO UPDATE SET
+                    task_id=excluded.task_id, issue_number=excluded.issue_number,
+                    url=excluded.url, external_state=excluded.external_state,
+                    external_updated_at=excluded.external_updated_at,
+                    last_synced_at=excluded.last_synced_at""",
+                (link.id, link.task_id, link.connection_id, link.external_id,
+                 link.issue_number, link.url, link.external_state,
+                 link.external_updated_at, link.last_synced_at),
+            )
+
 
 def parse_message(line: str) -> dict[str, Any]:
     """Parse and minimally validate a single IPC request."""
@@ -1367,6 +1426,10 @@ class TaskloomEngine:
             connection.id: connection for connection in self.state.load_provider_connections()
         }
         self.sync_events = self.state.load_sync_events()
+        self.external_issue_links = {
+            (link.connection_id, link.external_id): link
+            for link in self.state.load_external_issue_links()
+        }
         self.providers: dict[str, IssueProvider] = providers or {"github": GitHubCLIAdapter()}
         self._run_lock = asyncio.Lock()
         self._seed_defaults()
@@ -1621,6 +1684,17 @@ class TaskloomEngine:
             "completedAt": event.completed_at,
         }
 
+    @staticmethod
+    def serialize_external_issue_link(link: ExternalIssueLink) -> dict[str, Any]:
+        return {
+            "id": link.id, "taskId": link.task_id,
+            "connectionId": link.connection_id, "externalId": link.external_id,
+            "issueNumber": link.issue_number, "url": link.url,
+            "externalState": link.external_state,
+            "externalUpdatedAt": link.external_updated_at,
+            "lastSyncedAt": link.last_synced_at,
+        }
+
     def serialize_plan_approval(self, approval: PlanApproval) -> dict[str, Any]:
         run = self.workflow_runs[approval.workflow_run_id]
         workflow = self.workflows[approval.workflow_id]
@@ -1660,6 +1734,10 @@ class TaskloomEngine:
                 for connection in self.provider_connections.values()
             ],
             "syncEvents": [self.serialize_sync_event(event) for event in self.sync_events],
+            "externalIssueLinks": [
+                self.serialize_external_issue_link(link)
+                for link in self.external_issue_links.values()
+            ],
         }
 
     def _record_event(
@@ -2371,6 +2449,108 @@ class TaskloomEngine:
         return {"task": self.serialize_task(task), "worklog": self.serialize_worklog(worklog),
                 "disposition": "logged"}
 
+    async def sync_provider_inbound(self, connection: ProviderConnection) -> dict[str, int]:
+        if not connection.enabled:
+            raise ProtocolError("connection_disabled", "Provider connection is disabled.")
+        if connection.status != "connected":
+            raise ProtocolError(
+                "connection_not_ready", "Test the provider connection before importing issues.",
+            )
+        if connection.sync_direction == "outbound":
+            raise ProtocolError(
+                "sync_direction_blocked", "This connection is configured for outbound sync only.",
+            )
+        adapter = self.providers.get(connection.provider)
+        if adapter is None:
+            raise ProtocolError(
+                "unsupported_provider", f"Unsupported issue provider: {connection.provider}",
+            )
+        event = SyncEvent(
+            id=str(uuid.uuid4()), connection_id=connection.id, direction="inbound",
+            action="import_issues", status="running",
+            message=f"Importing open issues from {connection.repository}", attempt_count=1,
+        )
+        self.state.save_sync_event(event)
+        try:
+            issues = await adapter.list_open_issues(connection.repository)
+        except ProviderError as exc:
+            connection.status = "error"
+            connection.error = str(exc)
+            event.status = "failed"
+            event.message = str(exc)
+            event.completed_at = datetime.now(timezone.utc).isoformat()
+            self.state.save_provider_connection(connection)
+            self.state.save_sync_event(event)
+            self.sync_events = self.state.load_sync_events()
+            raise ProtocolError(exc.code, str(exc)) from exc
+
+        imported = 0
+        updated = 0
+        unchanged = 0
+        now = datetime.now(timezone.utc).isoformat()
+        for issue in issues:
+            key = (connection.id, issue.external_id)
+            link = self.external_issue_links.get(key)
+            if link is None:
+                task_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"taskloom:{connection.id}:{issue.external_id}",
+                ))
+                task = Task(
+                    id=task_id, title=issue.title,
+                    prompt=issue.body or f"Imported from GitHub Issue #{issue.number}.",
+                    status="backlog", source="provider", governance_state="accepted",
+                )
+                self.tasks[task.id] = task
+                self.state.save_task(task)
+                self.state.save_task_link(
+                    task.id, "issue", url=issue.url, provider=connection.provider,
+                    label=f"{connection.repository}#{issue.number}",
+                )
+                link = ExternalIssueLink(
+                    id=str(uuid.uuid5(
+                        uuid.NAMESPACE_URL, f"taskloom-link:{connection.id}:{issue.external_id}",
+                    )),
+                    task_id=task.id, connection_id=connection.id,
+                    external_id=issue.external_id, issue_number=issue.number,
+                    url=issue.url, external_state=issue.state,
+                    external_updated_at=issue.updated_at, last_synced_at=now,
+                )
+                imported += 1
+            else:
+                task = self.tasks.get(link.task_id)
+                changed = False
+                if task is not None:
+                    prompt = issue.body or f"Imported from GitHub Issue #{issue.number}."
+                    if task.title != issue.title or task.prompt != prompt:
+                        task.title = issue.title
+                        task.prompt = prompt
+                        task.version += 1
+                        self.state.save_task(task)
+                        changed = True
+                updated += int(changed)
+                unchanged += int(not changed)
+                link.issue_number = issue.number
+                link.url = issue.url
+                link.external_state = issue.state
+                link.external_updated_at = issue.updated_at
+                link.last_synced_at = now
+            self.external_issue_links[key] = link
+            self.state.save_external_issue_link(link)
+
+        connection.last_sync_at = now
+        connection.status = "connected"
+        connection.error = None
+        self.state.save_provider_connection(connection)
+        event.status = "completed"
+        event.message = (
+            f"Imported {imported}, updated {updated}, unchanged {unchanged} "
+            f"from {connection.repository}"
+        )
+        event.completed_at = now
+        self.state.save_sync_event(event)
+        self.sync_events = self.state.load_sync_events()
+        return {"imported": imported, "updated": updated, "unchanged": unchanged}
+
     async def handle(self, message: dict[str, Any]) -> list[dict[str, Any]]:
         request_id = message.get("id")
         kind = message["type"]
@@ -2459,6 +2639,16 @@ class TaskloomEngine:
             return [self._response(
                 request_id, "provider_connection_tested",
                 {"connection": self.serialize_provider_connection(connection)},
+            ), {"type": "state_snapshot", "payload": self.state_payload()}]
+        if kind == "sync_provider_inbound":
+            self._require(payload, "connectionId")
+            connection = self.provider_connections.get(str(payload["connectionId"]))
+            if connection is None:
+                raise ProtocolError("connection_not_found", "Provider connection does not exist.")
+            summary = await self.sync_provider_inbound(connection)
+            return [self._response(
+                request_id, "provider_sync_completed",
+                {"connection": self.serialize_provider_connection(connection), "summary": summary},
             ), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "ingest_create_task":
             return [self._response(
