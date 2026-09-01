@@ -26,6 +26,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from .providers import GitHubCLIAdapter, IssueProvider, ProviderError, validate_repository
+except ImportError:  # direct `python engine/main.py` execution
+    from providers import GitHubCLIAdapter, IssueProvider, ProviderError, validate_repository
+
 
 class ProtocolError(ValueError):
     """An invalid or unsupported IPC message."""
@@ -247,6 +252,37 @@ class CommandResult:
     return_code: int | None
     output: str
     timed_out: bool = False
+
+
+@dataclass
+class ProviderConnection:
+    id: str
+    provider: str
+    repository: str
+    sync_direction: str = "bidirectional"
+    auto_close: bool = True
+    enabled: bool = True
+    status: str = "not_tested"
+    last_sync_at: str | None = None
+    error: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass
+class SyncEvent:
+    id: str
+    connection_id: str
+    direction: str
+    action: str
+    status: str
+    message: str
+    task_id: str | None = None
+    external_id: str | None = None
+    attempt_count: int = 0
+    next_retry_at: str | None = None
+    created_at: str | None = None
+    completed_at: str | None = None
 
 
 class StateStore:
@@ -477,6 +513,37 @@ class StateStore:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS provider_connections (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                repository TEXT NOT NULL,
+                sync_direction TEXT NOT NULL,
+                auto_close INTEGER NOT NULL,
+                enabled INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                last_sync_at TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(provider, repository)
+            );
+
+            CREATE TABLE IF NOT EXISTS sync_events (
+                id TEXT PRIMARY KEY,
+                connection_id TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL,
+                task_id TEXT,
+                external_id TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY(connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+            );
             """
         )
         self._ensure_column("pending_changes", "workflow_run_id", "TEXT")
@@ -502,6 +569,12 @@ class StateStore:
                 """INSERT OR IGNORE INTO schema_migrations
                    (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)""",
                 (6, "governance-foundation", "taskloom-v0.6-governance",
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            self.connection.execute(
+                """INSERT OR IGNORE INTO schema_migrations
+                   (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)""",
+                (7, "provider-sync-foundation", "taskloom-v0.7-provider-sync",
                  datetime.now(timezone.utc).isoformat()),
             )
 
@@ -1033,6 +1106,73 @@ class StateStore:
                  event.event_type, event.message, event.created_at),
             )
 
+    def load_provider_connections(self) -> list[ProviderConnection]:
+        rows = self.connection.execute(
+            """SELECT id, provider, repository, sync_direction, auto_close, enabled,
+                      status, last_sync_at, error, created_at, updated_at
+                 FROM provider_connections ORDER BY created_at, rowid"""
+        ).fetchall()
+        return [ProviderConnection(
+            id=row["id"], provider=row["provider"], repository=row["repository"],
+            sync_direction=row["sync_direction"], auto_close=bool(row["auto_close"]),
+            enabled=bool(row["enabled"]), status=row["status"],
+            last_sync_at=row["last_sync_at"], error=row["error"],
+            created_at=row["created_at"], updated_at=row["updated_at"],
+        ) for row in rows]
+
+    def save_provider_connection(self, connection: ProviderConnection) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        connection.created_at = connection.created_at or now
+        connection.updated_at = now
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO provider_connections
+                   (id, provider, repository, sync_direction, auto_close, enabled,
+                    status, last_sync_at, error, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                    provider=excluded.provider, repository=excluded.repository,
+                    sync_direction=excluded.sync_direction, auto_close=excluded.auto_close,
+                    enabled=excluded.enabled, status=excluded.status,
+                    last_sync_at=excluded.last_sync_at, error=excluded.error,
+                    updated_at=excluded.updated_at""",
+                (connection.id, connection.provider, connection.repository,
+                 connection.sync_direction, int(connection.auto_close), int(connection.enabled),
+                 connection.status, connection.last_sync_at, connection.error,
+                 connection.created_at, connection.updated_at),
+            )
+
+    def load_sync_events(self, limit: int = 100) -> list[SyncEvent]:
+        rows = self.connection.execute(
+            """SELECT id, connection_id, direction, action, status, message, task_id,
+                      external_id, attempt_count, next_retry_at, created_at, completed_at
+                 FROM sync_events ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [SyncEvent(
+            id=row["id"], connection_id=row["connection_id"],
+            direction=row["direction"], action=row["action"], status=row["status"],
+            message=row["message"], task_id=row["task_id"], external_id=row["external_id"],
+            attempt_count=row["attempt_count"], next_retry_at=row["next_retry_at"],
+            created_at=row["created_at"], completed_at=row["completed_at"],
+        ) for row in rows]
+
+    def save_sync_event(self, event: SyncEvent) -> None:
+        event.created_at = event.created_at or datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO sync_events
+                   (id, connection_id, direction, action, status, message, task_id,
+                    external_id, attempt_count, next_retry_at, created_at, completed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+                    message=excluded.message, attempt_count=excluded.attempt_count,
+                    next_retry_at=excluded.next_retry_at, completed_at=excluded.completed_at""",
+                (event.id, event.connection_id, event.direction, event.action, event.status,
+                 event.message, event.task_id, event.external_id, event.attempt_count,
+                 event.next_retry_at, event.created_at, event.completed_at),
+            )
+
 
 def parse_message(line: str) -> dict[str, Any]:
     """Parse and minimally validate a single IPC request."""
@@ -1196,7 +1336,12 @@ class TaskloomEngine:
         ".git", ".taskloom", ".venv", "__pycache__", "dist", "node_modules", "target",
     }
 
-    def __init__(self, workspace: Path, llm: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        llm: LLMClient | None = None,
+        providers: dict[str, IssueProvider] | None = None,
+    ) -> None:
         self.workspace = workspace.resolve()
         self.snapshots = SnapshotStore(self.workspace)
         self.state = StateStore(self.workspace / ".taskloom" / "taskloom.db")
@@ -1218,6 +1363,11 @@ class TaskloomEngine:
             trigger.id: trigger for trigger in self.state.load_file_triggers()
         }
         self.events = self.state.load_events()
+        self.provider_connections = {
+            connection.id: connection for connection in self.state.load_provider_connections()
+        }
+        self.sync_events = self.state.load_sync_events()
+        self.providers: dict[str, IssueProvider] = providers or {"github": GitHubCLIAdapter()}
         self._run_lock = asyncio.Lock()
         self._seed_defaults()
         self._recover_interrupted_state()
@@ -1449,6 +1599,28 @@ class TaskloomEngine:
             "trackedFiles": len(trigger.baseline or {}),
         }
 
+    @staticmethod
+    def serialize_provider_connection(connection: ProviderConnection) -> dict[str, Any]:
+        return {
+            "id": connection.id, "provider": connection.provider,
+            "repository": connection.repository, "syncDirection": connection.sync_direction,
+            "autoClose": connection.auto_close, "enabled": connection.enabled,
+            "status": connection.status, "lastSyncAt": connection.last_sync_at,
+            "error": connection.error, "createdAt": connection.created_at,
+            "updatedAt": connection.updated_at,
+        }
+
+    @staticmethod
+    def serialize_sync_event(event: SyncEvent) -> dict[str, Any]:
+        return {
+            "id": event.id, "connectionId": event.connection_id,
+            "direction": event.direction, "action": event.action, "status": event.status,
+            "message": event.message, "taskId": event.task_id,
+            "externalId": event.external_id, "attemptCount": event.attempt_count,
+            "nextRetryAt": event.next_retry_at, "createdAt": event.created_at,
+            "completedAt": event.completed_at,
+        }
+
     def serialize_plan_approval(self, approval: PlanApproval) -> dict[str, Any]:
         run = self.workflow_runs[approval.workflow_run_id]
         workflow = self.workflows[approval.workflow_id]
@@ -1483,6 +1655,11 @@ class TaskloomEngine:
             "fileTriggers": [
                 self.serialize_file_trigger(trigger) for trigger in self.file_triggers.values()
             ],
+            "providerConnections": [
+                self.serialize_provider_connection(connection)
+                for connection in self.provider_connections.values()
+            ],
+            "syncEvents": [self.serialize_sync_event(event) for event in self.sync_events],
         }
 
     def _record_event(
@@ -2203,6 +2380,86 @@ class TaskloomEngine:
         if kind in {"list_tasks", "list_state"}:
             response_type = "task_list" if kind == "list_tasks" else "state_snapshot"
             return [self._response(request_id, response_type, self.state_payload())]
+        if kind == "create_provider_connection":
+            self._require(payload, "provider", "repository")
+            provider = str(payload["provider"]).lower()
+            adapter = self.providers.get(provider)
+            if adapter is None:
+                raise ProtocolError("unsupported_provider", f"Unsupported issue provider: {provider}")
+            try:
+                repository = validate_repository(str(payload["repository"]))
+            except ProviderError as exc:
+                raise ProtocolError(exc.code, str(exc)) from exc
+            sync_direction = str(payload.get("syncDirection", "bidirectional"))
+            if sync_direction not in {"inbound", "outbound", "bidirectional"}:
+                raise ProtocolError(
+                    "invalid_sync_direction",
+                    "Sync direction must be inbound, outbound, or bidirectional.",
+                )
+            duplicate = next((
+                item for item in self.provider_connections.values()
+                if item.provider == provider and item.repository.lower() == repository.lower()
+            ), None)
+            if duplicate:
+                raise ProtocolError(
+                    "connection_exists", f"{repository} is already connected to Taskloom.",
+                )
+            connection = ProviderConnection(
+                id=str(payload.get("connectionId") or uuid.uuid4()),
+                provider=provider, repository=repository,
+                sync_direction=sync_direction,
+                auto_close=bool(payload.get("autoClose", True)),
+            )
+            self.provider_connections[connection.id] = connection
+            self.state.save_provider_connection(connection)
+            return [self._response(
+                request_id, "provider_connection_created",
+                {"connection": self.serialize_provider_connection(connection)},
+            )]
+        if kind == "test_provider_connection":
+            self._require(payload, "connectionId")
+            connection = self.provider_connections.get(str(payload["connectionId"]))
+            if connection is None:
+                raise ProtocolError("connection_not_found", "Provider connection does not exist.")
+            adapter = self.providers.get(connection.provider)
+            if adapter is None:
+                raise ProtocolError(
+                    "unsupported_provider", f"Unsupported issue provider: {connection.provider}",
+                )
+            event = SyncEvent(
+                id=str(uuid.uuid4()), connection_id=connection.id, direction="system",
+                action="test_connection", status="running",
+                message=f"Testing access to {connection.repository}",
+            )
+            self.state.save_sync_event(event)
+            connection.status = "testing"
+            connection.error = None
+            self.state.save_provider_connection(connection)
+            try:
+                result = await adapter.test_connection(connection.repository)
+            except ProviderError as exc:
+                connection.status = "error"
+                connection.error = str(exc)
+                event.status = "failed"
+                event.message = str(exc)
+                event.completed_at = datetime.now(timezone.utc).isoformat()
+                self.state.save_provider_connection(connection)
+                self.state.save_sync_event(event)
+                self.sync_events = self.state.load_sync_events()
+                raise ProtocolError(exc.code, str(exc)) from exc
+            connection.repository = result.get("repository", connection.repository)
+            connection.status = "connected"
+            connection.error = None
+            event.status = "completed"
+            event.message = f"Connected to {connection.repository}"
+            event.completed_at = datetime.now(timezone.utc).isoformat()
+            self.state.save_provider_connection(connection)
+            self.state.save_sync_event(event)
+            self.sync_events = self.state.load_sync_events()
+            return [self._response(
+                request_id, "provider_connection_tested",
+                {"connection": self.serialize_provider_connection(connection)},
+            ), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "ingest_create_task":
             return [self._response(
                 request_id, "governed_task_ingested", self.ingest_create_task(payload),

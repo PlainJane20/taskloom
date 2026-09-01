@@ -170,6 +170,38 @@ export interface FileTrigger {
   trackedFiles: number;
 }
 
+export type SyncDirection = "inbound" | "outbound" | "bidirectional";
+export type ProviderConnectionStatus = "not_tested" | "testing" | "connected" | "error";
+
+export interface ProviderConnection {
+  id: string;
+  provider: "github" | string;
+  repository: string;
+  syncDirection: SyncDirection;
+  autoClose: boolean;
+  enabled: boolean;
+  status: ProviderConnectionStatus;
+  lastSyncAt?: string | null;
+  error?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SyncEvent {
+  id: string;
+  connectionId: string;
+  direction: "inbound" | "outbound" | "system";
+  action: string;
+  status: "queued" | "running" | "completed" | "failed";
+  message: string;
+  taskId?: string | null;
+  externalId?: string | null;
+  attemptCount: number;
+  nextRetryAt?: string | null;
+  createdAt: string;
+  completedAt?: string | null;
+}
+
 export interface StepRun {
   id: string;
   workflowRunId: string;

@@ -3,7 +3,7 @@ import { documentDir, join, resourceDir } from "@tauri-apps/api/path";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import type {
   AgentProfile, AgentSession, AgentTask, ApprovalRequest, AutomationTrigger, BridgeRequest, BridgeResponse,
-  FileTrigger, PlanApprovalRequest, Workflow, WorkflowRun,
+  FileTrigger, PlanApprovalRequest, ProviderConnection, SyncDirection, SyncEvent, Workflow, WorkflowRun,
 } from "../types";
 
 export type BridgeStatus = "connecting" | "connected" | "error" | "stopped";
@@ -19,6 +19,8 @@ export interface AgentBridge {
   workflowRuns: WorkflowRun[];
   triggers: AutomationTrigger[];
   fileTriggers: FileTrigger[];
+  providerConnections: ProviderConnection[];
+  syncEvents: SyncEvent[];
   error: string | null;
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
@@ -42,6 +44,10 @@ export interface AgentBridge {
   createFileTrigger: (input: Omit<FileTrigger, "id" | "lastRunAt" | "lastRunId" | "error" | "trackedFiles">) => Promise<FileTrigger>;
   setFileTriggerEnabled: (triggerId: string, enabled: boolean) => Promise<void>;
   deleteFileTrigger: (triggerId: string) => Promise<void>;
+  createProviderConnection: (input: {
+    provider: "github"; repository: string; syncDirection: SyncDirection; autoClose: boolean;
+  }) => Promise<ProviderConnection>;
+  testProviderConnection: (connectionId: string) => Promise<ProviderConnection>;
   refresh: () => Promise<void>;
 }
 
@@ -66,6 +72,8 @@ export function useAgentBridge(): AgentBridge {
   const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
   const [triggers, setTriggers] = useState<AutomationTrigger[]>([]);
   const [fileTriggers, setFileTriggers] = useState<FileTrigger[]>([]);
+  const [providerConnections, setProviderConnections] = useState<ProviderConnection[]>([]);
+  const [syncEvents, setSyncEvents] = useState<SyncEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const childRef = useRef<Child | null>(null);
   const pendingRef = useRef(new Map<string, PendingRequest>());
@@ -111,6 +119,12 @@ export function useAgentBridge(): AgentBridge {
       if (Array.isArray(message.payload.workflowRuns)) setWorkflowRuns(message.payload.workflowRuns as unknown as WorkflowRun[]);
       if (Array.isArray(message.payload.triggers)) setTriggers(message.payload.triggers as unknown as AutomationTrigger[]);
       if (Array.isArray(message.payload.fileTriggers)) setFileTriggers(message.payload.fileTriggers as unknown as FileTrigger[]);
+      if (Array.isArray(message.payload.providerConnections)) {
+        setProviderConnections(message.payload.providerConnections as unknown as ProviderConnection[]);
+      }
+      if (Array.isArray(message.payload.syncEvents)) {
+        setSyncEvents(message.payload.syncEvents as unknown as SyncEvent[]);
+      }
     }
     const task = message.payload?.task as AgentTask | undefined;
     if (task) upsertTask(task);
@@ -358,13 +372,29 @@ export function useAgentBridge(): AgentBridge {
     await send({ type: "list_state", payload: {} });
   }, [send]);
 
+  const createProviderConnection = useCallback(async (input: {
+    provider: "github"; repository: string; syncDirection: SyncDirection; autoClose: boolean;
+  }) => {
+    const response = await send({ type: "create_provider_connection", payload: input });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.connection as unknown as ProviderConnection;
+  }, [send]);
+
+  const testProviderConnection = useCallback(async (connectionId: string) => {
+    const response = await send({ type: "test_provider_connection", payload: { connectionId } });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.connection as unknown as ProviderConnection;
+  }, [send]);
+
   return {
     status, tasks, sessions, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
+    providerConnections, syncEvents,
     error, send,
     createTask, runTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
     runWorkflow, retryWorkflow, cancelWorkflow, createTrigger, setTriggerEnabled,
     runTriggerNow, deleteTrigger, createFileTrigger, setFileTriggerEnabled, deleteFileTrigger,
+    createProviderConnection, testProviderConnection,
     refresh,
   };
 }
