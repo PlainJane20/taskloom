@@ -14,6 +14,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -73,6 +74,8 @@ class WorkflowStep:
     kind: str
     instruction: str
     depends_on: tuple[str, ...] = ()
+    command: tuple[str, ...] = ()
+    timeout_seconds: int = 120
 
 
 @dataclass
@@ -146,6 +149,13 @@ class ExecutionEvent:
     message: str
     created_at: str
     step_run_id: str | None = None
+
+
+@dataclass
+class CommandResult:
+    return_code: int | None
+    output: str
+    timed_out: bool = False
 
 
 class StateStore:
@@ -379,6 +389,8 @@ class StateStore:
         return tuple(WorkflowStep(
             id=item["id"], name=item["name"], agent_id=item["agentId"], kind=item["kind"],
             instruction=item["instruction"], depends_on=tuple(item.get("dependsOn", [])),
+            command=tuple(str(value) for value in item.get("command", [])),
+            timeout_seconds=int(item.get("timeoutSeconds", 120)),
         ) for item in json.loads(raw))
 
     @staticmethod
@@ -386,6 +398,7 @@ class StateStore:
         return json.dumps([{
             "id": step.id, "name": step.name, "agentId": step.agent_id, "kind": step.kind,
             "instruction": step.instruction, "dependsOn": list(step.depends_on),
+            "command": list(step.command), "timeoutSeconds": step.timeout_seconds,
         } for step in steps])
 
     def load_workflows(self) -> list[Workflow]:
@@ -708,6 +721,11 @@ class LLMClient:
 class TaskloomEngine:
     APPROVAL_MODES = {"observe", "approve_changes", "approve_plan", "trusted"}
     STEP_KINDS = {"analysis", "file_edit", "validate"}
+    VALIDATION_EXECUTABLES = {
+        "cargo", "eslint", "git", "mypy", "node", "npm", "pytest", "python", "python3",
+        "ruff", "tsc", "vitest",
+    }
+    MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 
     def __init__(self, workspace: Path, llm: LLMClient | None = None) -> None:
         self.workspace = workspace.resolve()
@@ -853,6 +871,7 @@ class TaskloomEngine:
             "steps": [{
                 "id": step.id, "name": step.name, "agentId": step.agent_id, "kind": step.kind,
                 "instruction": step.instruction, "dependsOn": list(step.depends_on),
+                "command": list(step.command), "timeoutSeconds": step.timeout_seconds,
             } for step in workflow.steps],
         }
 
@@ -948,6 +967,7 @@ class TaskloomEngine:
                 raise ProtocolError("agent_not_found", f"Agent '{step.agent_id}' does not exist")
             if step.kind not in self.STEP_KINDS:
                 raise ProtocolError("invalid_step_kind", f"Unsupported step kind '{step.kind}'")
+            self._validate_command(step)
             unknown = set(step.depends_on) - seen
             if unknown:
                 raise ProtocolError(
@@ -955,6 +975,60 @@ class TaskloomEngine:
                     f"Step '{step.name}' depends on unavailable steps: {', '.join(sorted(unknown))}",
                 )
             seen.add(step.id)
+
+    def _validate_command(self, step: WorkflowStep) -> None:
+        if not step.command:
+            if step.timeout_seconds < 1 or step.timeout_seconds > 900:
+                raise ProtocolError("invalid_timeout", "Validation timeout must be 1–900 seconds")
+            return
+        if step.kind != "validate":
+            raise ProtocolError("invalid_command_step", "Only validation steps may run commands")
+        if len(step.command) > 32 or any(len(argument) > 512 for argument in step.command):
+            raise ProtocolError("invalid_command", "Validation command is too large")
+        executable = step.command[0]
+        if executable != Path(executable).name or executable not in self.VALIDATION_EXECUTABLES:
+            raise ProtocolError(
+                "unsafe_executable",
+                f"Validation executable '{executable}' is not in Taskloom's allowlist",
+            )
+        for argument in step.command[1:]:
+            argument_path = Path(argument)
+            if argument_path.is_absolute() or ".." in argument_path.parts or "\x00" in argument:
+                raise ProtocolError("unsafe_argument", "Validation arguments must remain workspace-relative")
+        if step.timeout_seconds < 1 or step.timeout_seconds > 900:
+            raise ProtocolError("invalid_timeout", "Validation timeout must be 1–900 seconds")
+
+    async def _run_validation_command(self, step: WorkflowStep) -> CommandResult:
+        environment = {
+            key: value for key, value in os.environ.items()
+            if key in {
+                "PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "COMSPEC", "PATHEXT",
+                "RUSTUP_HOME", "CARGO_HOME",
+            }
+        }
+        environment.update({"NO_COLOR": "1", "TASKLOOM_VALIDATION": "1"})
+        with tempfile.TemporaryFile() as output_file:
+            process = await asyncio.create_subprocess_exec(
+                *step.command, cwd=self.workspace, env=environment,
+                stdout=output_file, stderr=asyncio.subprocess.STDOUT,
+            )
+            timed_out = False
+            try:
+                await asyncio.wait_for(process.wait(), timeout=step.timeout_seconds)
+            except asyncio.TimeoutError:
+                timed_out = True
+                process.kill()
+                await process.wait()
+            output_file.seek(0)
+            raw = output_file.read(self.MAX_COMMAND_OUTPUT_BYTES + 1)
+        truncated = len(raw) > self.MAX_COMMAND_OUTPUT_BYTES
+        output = raw[:self.MAX_COMMAND_OUTPUT_BYTES].decode("utf-8", errors="replace")
+        if truncated:
+            output += "\n[Taskloom truncated validation output at 64 KiB]\n"
+        return CommandResult(
+            return_code=None if timed_out else process.returncode,
+            output=output or "(command produced no output)", timed_out=timed_out,
+        )
 
     def _create_workflow_run(
         self, workflow: Workflow, goal: str, target_file: str,
@@ -1095,10 +1169,24 @@ class TaskloomEngine:
             prompt += f"\n\nOutputs from completed dependencies:\n{context}"
         try:
             if definition.kind == "validate":
-                target = self.snapshots.resolve_path(run.target_file)
-                if not target.is_file() or not target.read_text(encoding="utf-8").strip():
-                    raise ProtocolError("validation_failed", "Target file is missing or empty")
-                step.output = f"Validated {run.target_file}: file exists and is not empty."
+                if definition.command:
+                    result = await self._run_validation_command(definition)
+                    step.output = result.output
+                    if result.timed_out:
+                        raise ProtocolError(
+                            "validation_timeout",
+                            f"Validation command exceeded {definition.timeout_seconds} seconds",
+                        )
+                    if result.return_code != 0:
+                        raise ProtocolError(
+                            "validation_command_failed",
+                            f"Validation command exited with code {result.return_code}",
+                        )
+                else:
+                    target = self.snapshots.resolve_path(run.target_file)
+                    if not target.is_file() or not target.read_text(encoding="utf-8").strip():
+                        raise ProtocolError("validation_failed", "Target file is missing or empty")
+                    step.output = f"Validated {run.target_file}: file exists and is not empty."
                 step.status = "completed"
             elif definition.kind == "analysis":
                 step.output = normalize_generated_file(
@@ -1241,6 +1329,8 @@ class TaskloomEngine:
                 agent_id=str(item["agentId"]), kind=str(item["kind"]),
                 instruction=str(item["instruction"]),
                 depends_on=tuple(str(value) for value in item.get("dependsOn", [])),
+                command=tuple(str(value) for value in item.get("command", [])),
+                timeout_seconds=int(item.get("timeoutSeconds", 120)),
             ) for item in raw_steps)
             workflow = Workflow(
                 id=str(payload.get("workflowId") or uuid.uuid4()), name=str(payload["name"]),
@@ -1269,6 +1359,8 @@ class TaskloomEngine:
                     agent_id=str(item["agentId"]), kind=str(item["kind"]),
                     instruction=str(item["instruction"]),
                     depends_on=tuple(str(value) for value in item.get("dependsOn", [])),
+                    command=tuple(str(value) for value in item.get("command", [])),
+                    timeout_seconds=int(item.get("timeoutSeconds", 120)),
                 ) for item in raw_steps),
                 enabled=bool(payload.get("enabled", workflow.enabled)),
             )

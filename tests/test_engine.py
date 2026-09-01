@@ -573,3 +573,138 @@ async def test_failed_workflow_can_retry_from_failed_step(tmp_path: Path) -> Non
     assert "run_retried" in {
         event.event_type for event in engine.events if event.workflow_run_id == run.id
     }
+
+
+@pytest.mark.asyncio
+async def test_validation_command_captures_output_and_completes(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "command-success", "name": "Command success",
+            "description": "Run a validation command", "approvalMode": "observe", "steps": [{
+                "id": "test", "name": "Test", "agentId": "reviewer", "kind": "validate",
+                "instruction": "Run validation", "dependsOn": [],
+                "command": ["python3", "-c", "print('validation ok')"], "timeoutSeconds": 10,
+            }],
+        },
+    })
+
+    await engine.handle({
+        "type": "run_workflow",
+        "payload": {"workflowId": "command-success", "goal": "Validate", "targetFile": "result.txt"},
+    })
+
+    run = next(run for run in engine.workflow_runs.values() if run.workflow_id == "command-success")
+    step = next(step for step in engine.step_runs.values() if step.workflow_run_id == run.id)
+    assert run.status == "completed"
+    assert step.status == "completed"
+    assert step.output == "validation ok\n"
+
+
+@pytest.mark.asyncio
+async def test_validation_command_failure_preserves_output_and_exit_code(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "command-failure", "name": "Command failure",
+            "description": "Fail validation", "approvalMode": "observe", "steps": [{
+                "id": "test", "name": "Test", "agentId": "reviewer", "kind": "validate",
+                "instruction": "Run validation", "dependsOn": [],
+                "command": ["python3", "-c", "print('failed check'); raise SystemExit(3)"],
+                "timeoutSeconds": 10,
+            }],
+        },
+    })
+
+    await engine.handle({
+        "type": "run_workflow",
+        "payload": {"workflowId": "command-failure", "goal": "Validate", "targetFile": "result.txt"},
+    })
+
+    run = next(run for run in engine.workflow_runs.values() if run.workflow_id == "command-failure")
+    step = next(step for step in engine.step_runs.values() if step.workflow_run_id == run.id)
+    assert run.status == "failed"
+    assert "exited with code 3" in (run.error or "")
+    assert step.output == "failed check\n"
+
+
+@pytest.mark.asyncio
+async def test_validation_command_timeout_stops_process(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "command-timeout", "name": "Command timeout",
+            "description": "Time out validation", "approvalMode": "observe", "steps": [{
+                "id": "test", "name": "Test", "agentId": "reviewer", "kind": "validate",
+                "instruction": "Run validation", "dependsOn": [],
+                "command": ["python3", "-c", "import time; time.sleep(2)"], "timeoutSeconds": 1,
+            }],
+        },
+    })
+
+    await engine.handle({
+        "type": "run_workflow",
+        "payload": {"workflowId": "command-timeout", "goal": "Validate", "targetFile": "result.txt"},
+    })
+
+    run = next(run for run in engine.workflow_runs.values() if run.workflow_id == "command-timeout")
+    assert run.status == "failed"
+    assert "exceeded 1 seconds" in (run.error or "")
+
+
+@pytest.mark.asyncio
+async def test_validation_command_rejects_shells_and_workspace_escape(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+
+    with pytest.raises(ProtocolError) as shell_error:
+        await engine.handle({
+            "type": "create_workflow",
+            "payload": {
+                "name": "Unsafe shell", "description": "Unsafe", "approvalMode": "observe",
+                "steps": [{
+                    "id": "test", "name": "Test", "agentId": "reviewer", "kind": "validate",
+                    "instruction": "Run", "dependsOn": [], "command": ["sh", "-c", "echo unsafe"],
+                }],
+            },
+        })
+    assert shell_error.value.code == "unsafe_executable"
+
+    with pytest.raises(ProtocolError) as path_error:
+        await engine.handle({
+            "type": "create_workflow",
+            "payload": {
+                "name": "Unsafe path", "description": "Unsafe", "approvalMode": "observe",
+                "steps": [{
+                    "id": "test", "name": "Test", "agentId": "reviewer", "kind": "validate",
+                    "instruction": "Run", "dependsOn": [],
+                    "command": ["python3", "../outside.py"],
+                }],
+            },
+        })
+    assert path_error.value.code == "unsafe_argument"
+
+
+@pytest.mark.asyncio
+async def test_validation_command_configuration_survives_restart(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_workflow",
+        "payload": {
+            "workflowId": "persistent-command", "name": "Persistent command",
+            "description": "Persist command", "approvalMode": "observe", "steps": [{
+                "id": "test", "name": "Test", "agentId": "reviewer", "kind": "validate",
+                "instruction": "Run validation", "dependsOn": [],
+                "command": ["npm", "test"], "timeoutSeconds": 240,
+            }],
+        },
+    })
+
+    restarted = TaskloomEngine(tmp_path, llm=FakeLLM())
+    step = restarted.workflows["persistent-command"].steps[0]
+    serialized = restarted.serialize_workflow(restarted.workflows["persistent-command"])
+    assert step.command == ("npm", "test")
+    assert step.timeout_seconds == 240
+    assert serialized["steps"][0]["command"] == ["npm", "test"]
