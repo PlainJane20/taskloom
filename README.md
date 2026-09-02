@@ -46,6 +46,13 @@ Taskloom moves those controls into a desktop automation studio:
 
 Taskloom is not another model competing with coding agents. It is the visual policy and orchestration layer above them.
 
+**Related work in this portfolio:** [muster](https://github.com/PlainJane20/muster)
+and [switchboard](https://github.com/PlainJane20/switchboard) are two more
+independent takes on the same underlying interest — orchestrating a
+fleet of AI agents — not a connected pipeline with this one. Both are
+headless/CLI; this repo is the visual-desktop-app angle on the same
+problem, aimed at people who don't want to live in a terminal.
+
 ## How it works
 
 ```text
