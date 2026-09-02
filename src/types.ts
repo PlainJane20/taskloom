@@ -182,6 +182,11 @@ export interface ProviderConnection {
   enabled: boolean;
   status: ProviderConnectionStatus;
   lastSyncAt?: string | null;
+  backgroundSyncEnabled: boolean;
+  syncIntervalMinutes: number;
+  nextSyncAt?: string | null;
+  lastSuccessAt?: string | null;
+  consecutiveFailures: number;
   error?: string | null;
   createdAt: string;
   updatedAt: string;

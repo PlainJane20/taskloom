@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.7.2-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.7.2)
+  [![Release](https://img.shields.io/badge/release-v0.8.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.8.0)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.7.2 is a working governed multi-agent automation platform with bidirectional GitHub Issues synchronization. Open issues import into the board idempotently, and a guarded **Mark complete** action closes linked issues through a reliable in-app confirmation modal with visible success, conflict, or retry feedback. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 87 automated tests.
+> **Project status:** Taskloom v0.8.0 is a working governed multi-agent automation platform with durable bidirectional GitHub Issues synchronization. While Taskloom is open, configurable background reconciliation imports new work, refreshes linked cards, detects remote closures and reopenings, and recovers from provider failures with visible bounded backoff. Guarded completion still requires explicit confirmation before closing a linked Issue. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 88 automated tests.
 
 ## Why Taskloom
 
@@ -39,6 +39,7 @@ Taskloom moves those controls into a desktop automation studio:
 - **Recover safely** — every automated write remains workspace-confined, atomic, and snapshotted.
 - **Resume seamlessly** — SQLite restores agents, workflows, runs, steps, tasks, and approvals.
 - **Close the loop with GitHub** — import Issues as linked cards and safely reflect completed work back to GitHub.
+- **Stay synchronized automatically** — reconcile provider work on a visible schedule with pause controls, health state, and bounded retry backoff.
 
 Taskloom is not another model competing with coding agents. It is the visual policy and orchestration layer above them.
 
@@ -88,7 +89,7 @@ Goal / Schedule / File change → Workflow → Planner → Builder → Validator
 | Resilient output handling | Removes accidental outer Markdown fences without altering embedded content |
 | Desktop distribution | Native Tauri shell with macOS application packaging and branded assets |
 | Automated quality gates | Python, React, TypeScript, and Rust checks on every push and pull request |
-| Bidirectional GitHub Issues | Idempotent imports, linked cards, confirmed one-click completion, guarded issue closure, conflict detection, and durable retries |
+| Bidirectional GitHub Issues | Scheduled idempotent reconciliation, remote close/reopen detection, linked cards, confirmed completion, conflicts, health state, and durable retries |
 | Credential isolation | Uses the authenticated official `gh` client; Taskloom never copies access tokens into SQLite |
 
 ## Architecture
@@ -109,12 +110,14 @@ flowchart LR
         Engine --> Scheduler[Durable trigger scheduler]
         Scheduler --> Interval[Interval schedules]
         Scheduler --> Watcher[Filtered filesystem watcher]
+        Scheduler --> ProviderPoll[Provider reconciliation schedule]
         Interval --> Runner[Dependency-aware workflow runner]
         Watcher --> Runner
         Engine --> Runner
         Runner --> Policy{Automation policy}
         Engine --> State[(SQLite durable state)]
-        Engine <-->|Reconcile and complete| Sync[Provider sync coordinator]
+        ProviderPoll --> Sync[Provider sync coordinator]
+        Engine <-->|Import, reconcile, and complete| Sync
         Engine --> Guard[Workspace path guard]
         Runner --> Command[Guarded validation command]
     end
@@ -244,7 +247,7 @@ gh auth login
 gh auth status
 ```
 
-Enter a repository as `owner/name`, choose import-only, outbound-only, or two-way sync, and select **Connect**. **Import issues** creates one linked Taskloom card per open Issue; importing again reconciles the existing cards instead of duplicating them. When auto-close is enabled, completing a linked card closes its Issue unless GitHub has a newer edit. Conflicts require an explicit user override, while rate limits and transient failures are retried from durable state.
+Enter a repository as `owner/name`, choose import-only, outbound-only, or two-way sync, select an automatic reconciliation interval, and choose **Connect**. **Import issues** provides an immediate manual refresh, while the engine continues the same idempotent reconciliation path in the background while Taskloom is open. The connection card shows the next attempt, last healthy sync, and retry health, and lets you pause or resume automatic work. Remote closures move linked cards to Completed; reopened Issues return them to Backlog. When auto-close is enabled, completing a linked card closes its Issue unless GitHub has a newer edit. Conflicts require an explicit user override, while rate limits and transient failures use durable bounded backoff.
 
 Taskloom invokes `gh` without a shell and stores only repository, link, status, and audit metadata. It never requests, prints, or persists the GitHub token.
 
@@ -330,7 +333,7 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **84 automated tests**: 66 Python/MCP tests and 18 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **88 automated tests**: 66 Python/MCP tests and 22 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 
@@ -391,7 +394,7 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [x] Official MCP v2 governed task, progress, trace, and cooperative-control tools
 - [x] Confidence gating, idempotency, short-window clustering, and optimistic versions
 - [x] Agent/session/branch swimlanes, collision warnings, trace viewer, and Git/PR badges
-- [x] Bidirectional GitHub Issues sync with idempotent imports, conflicts, and durable retries
+- [x] Bidirectional GitHub Issues sync with automatic reconciliation, remote close/reopen handling, conflicts, health state, and durable retries
 - [ ] Task editing, deletion, filtering, and run history
 - [ ] In-app workspace and model settings
 - [ ] Syntax-aware diffs with line-level navigation
@@ -415,7 +418,7 @@ Taskloom demonstrates several production-oriented software engineering challenge
 - Built a policy-driven mutation interceptor supporting four autonomy levels while preserving canonical path containment, atomic writes, durable approvals, and pre-write snapshots.
 - Coordinated state across React, a Python workflow state machine, and migration-safe SQLite tables while serializing local inference to control CPU/GPU pressure.
 - Built a credential-isolated provider boundary with idempotent reconciliation, optimistic conflict checks, exponential retries, and durable sync auditing.
-- Established 84 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
+- Established 88 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
 
 ## Contributing
 

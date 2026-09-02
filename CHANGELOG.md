@@ -3,6 +3,27 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-09-01
+
+### Added
+
+- Durable automatic GitHub Issue reconciliation while Taskloom is open, with configurable 5, 15, 30, and 60 minute intervals.
+- Per-connection pause/resume controls, next-attempt scheduling, last healthy sync timestamps, and visible failure counts.
+- Automatic local completion when a linked Issue is closed remotely and automatic backlog restoration when it is reopened.
+- Migration-safe persistence for background-sync policy, schedule, health, and consecutive failures.
+
+### Reliability
+
+- Reuses the idempotent manual import path for scheduled reconciliation instead of maintaining a second synchronization implementation.
+- Applies bounded exponential backoff after provider failures and resumes healthy intervals after a successful retry.
+- Prevents overlapping scheduled synchronization for the same provider connection.
+- Keeps scheduling inside the existing engine lifecycle; no background daemon remains after Taskloom closes.
+
+### Verification
+
+- Expands automated coverage to 88 tests: 66 Python/MCP and 22 React interactions.
+- Adds regression coverage for persisted scheduling, due imports, retry backoff, remote completion, remote reopening, and UI pause controls.
+
 ## [0.7.2] - 2026-09-01
 
 ### Fixed
@@ -156,6 +177,7 @@ All notable Taskloom changes are documented here. This project follows
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
 [0.4.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0
+[0.8.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.8.0
 [0.7.2]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.2
 [0.7.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.1
 [0.7.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.0

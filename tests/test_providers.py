@@ -30,7 +30,7 @@ class FakeGitHubProvider:
         self.listed.append(repository)
         if self.failure:
             raise self.failure
-        return self.issues
+        return [issue for issue in self.issues if issue.state == "open"]
 
     async def get_issue(self, repository: str, issue_number: int) -> ExternalIssue:
         if self.outbound_failure:
@@ -107,6 +107,8 @@ async def test_provider_connection_is_persisted_and_tested_without_credentials(t
     restarted = TaskloomEngine(tmp_path, providers={"github": provider})
     state = restarted.state_payload()
     assert state["providerConnections"][0]["repository"] == "PlainJane20/taskloom"
+    assert state["providerConnections"][0]["backgroundSyncEnabled"] is True
+    assert state["providerConnections"][0]["syncIntervalMinutes"] == 15
     assert state["syncEvents"][0]["action"] == "test_connection"
     assert state["syncEvents"][0]["status"] == "completed"
 
@@ -114,6 +116,107 @@ async def test_provider_connection_is_persisted_and_tested_without_credentials(t
     columns = {row["name"] for row in database.execute("PRAGMA table_info(provider_connections)")}
     assert "token" not in columns
     assert "secret" not in columns
+
+
+@pytest.mark.asyncio
+async def test_background_sync_settings_are_persisted_and_updateable(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, providers={"github": FakeGitHubProvider()})
+    await engine.handle({
+        "type": "create_provider_connection",
+        "payload": {
+            "connectionId": "github-main", "provider": "github", "repository": "acme/app",
+            "backgroundSyncEnabled": False, "syncIntervalMinutes": 30,
+        },
+    })
+    await engine.handle({
+        "type": "update_provider_connection_sync",
+        "payload": {
+            "connectionId": "github-main", "backgroundSyncEnabled": True,
+            "syncIntervalMinutes": 5,
+        },
+    })
+
+    restarted = TaskloomEngine(tmp_path, providers={"github": FakeGitHubProvider()})
+    connection = restarted.state_payload()["providerConnections"][0]
+    assert connection["backgroundSyncEnabled"] is True
+    assert connection["syncIntervalMinutes"] == 5
+    assert connection["nextSyncAt"] is not None
+
+
+@pytest.mark.asyncio
+async def test_due_background_sync_imports_and_schedules_next_attempt(tmp_path: Path) -> None:
+    provider = FakeGitHubProvider(issues=[ExternalIssue(
+        external_id="auto-1", number=21, title="Imported automatically", body="Background sync",
+        state="open", url="https://github.com/acme/app/issues/21",
+        updated_at="2026-09-01T12:00:00Z",
+    )])
+    engine = TaskloomEngine(tmp_path, providers={"github": provider})
+    await engine.handle({
+        "type": "create_provider_connection",
+        "payload": {"connectionId": "github-main", "provider": "github", "repository": "acme/app"},
+    })
+    await engine.handle({
+        "type": "test_provider_connection", "payload": {"connectionId": "github-main"},
+    })
+    engine.provider_connections["github-main"].next_sync_at = "2020-01-01T00:00:00+00:00"
+
+    summaries = await engine.run_due_provider_syncs()
+
+    assert summaries[0]["imported"] == 1
+    connection = engine.provider_connections["github-main"]
+    assert connection.consecutive_failures == 0
+    assert connection.last_success_at is not None
+    assert connection.next_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_background_sync_failure_enters_persisted_backoff(tmp_path: Path) -> None:
+    provider = FakeGitHubProvider()
+    engine = TaskloomEngine(tmp_path, providers={"github": provider})
+    await engine.handle({
+        "type": "create_provider_connection",
+        "payload": {"connectionId": "github-main", "provider": "github", "repository": "acme/app"},
+    })
+    await engine.handle({
+        "type": "test_provider_connection", "payload": {"connectionId": "github-main"},
+    })
+    connection = engine.provider_connections["github-main"]
+    connection.next_sync_at = "2020-01-01T00:00:00+00:00"
+    provider.failure = ProviderError("github_rate_limited", "Rate limited.", retryable=True)
+
+    summaries = await engine.run_due_provider_syncs()
+
+    assert summaries == [{}]
+    assert connection.status == "error"
+    assert connection.consecutive_failures == 1
+    assert connection.next_sync_at is not None
+    restarted = TaskloomEngine(tmp_path, providers={"github": provider})
+    assert restarted.provider_connections["github-main"].consecutive_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_inbound_reconciliation_completes_and_reopens_linked_cards(tmp_path: Path) -> None:
+    issue = ExternalIssue(
+        external_id="reconcile-1", number=22, title="Reconcile state", body="Two-way state",
+        state="open", url="https://github.com/acme/app/issues/22",
+        updated_at="2026-09-01T12:00:00Z",
+    )
+    provider = FakeGitHubProvider(issues=[issue])
+    engine, task_id = await _engine_with_imported_issue(tmp_path, provider)
+
+    provider.issues = [ExternalIssue(**{
+        **issue.__dict__, "state": "closed", "updated_at": "2026-09-01T13:00:00Z",
+    })]
+    closed = await engine.sync_provider_inbound(engine.provider_connections["github-main"])
+    assert closed["completed"] == 1
+    assert engine.tasks[task_id].status == "completed"
+
+    provider.issues = [ExternalIssue(**{
+        **issue.__dict__, "state": "open", "updated_at": "2026-09-01T14:00:00Z",
+    })]
+    reopened = await engine.sync_provider_inbound(engine.provider_connections["github-main"])
+    assert reopened["reopened"] == 1
+    assert engine.tasks[task_id].status == "backlog"
 
 
 @pytest.mark.asyncio
@@ -172,7 +275,9 @@ async def test_inbound_sync_is_idempotent_and_reconciles_remote_edits(tmp_path: 
     first = await engine.handle({
         "type": "sync_provider_inbound", "payload": {"connectionId": "github-main"},
     })
-    assert first[0]["payload"]["summary"] == {"imported": 1, "updated": 0, "unchanged": 0}
+    assert first[0]["payload"]["summary"] == {
+        "imported": 1, "updated": 0, "unchanged": 0, "completed": 0, "reopened": 0,
+    }
     imported_task = next(iter(engine.tasks.values()))
     assert imported_task.source == "provider"
     assert imported_task.title == "Add integration health panel"
@@ -186,7 +291,9 @@ async def test_inbound_sync_is_idempotent_and_reconciles_remote_edits(tmp_path: 
     second = await engine.handle({
         "type": "sync_provider_inbound", "payload": {"connectionId": "github-main"},
     })
-    assert second[0]["payload"]["summary"] == {"imported": 0, "updated": 0, "unchanged": 1}
+    assert second[0]["payload"]["summary"] == {
+        "imported": 0, "updated": 0, "unchanged": 1, "completed": 0, "reopened": 0,
+    }
     assert len(engine.tasks) == 1
     assert len(engine.external_issue_links) == 1
 
@@ -196,7 +303,9 @@ async def test_inbound_sync_is_idempotent_and_reconciles_remote_edits(tmp_path: 
     third = await engine.handle({
         "type": "sync_provider_inbound", "payload": {"connectionId": "github-main"},
     })
-    assert third[0]["payload"]["summary"] == {"imported": 0, "updated": 1, "unchanged": 0}
+    assert third[0]["payload"]["summary"] == {
+        "imported": 0, "updated": 1, "unchanged": 0, "completed": 0, "reopened": 0,
+    }
     assert engine.tasks[imported_task.id].title == "Add provider health panel"
 
     restarted = TaskloomEngine(tmp_path, providers={"github": provider})

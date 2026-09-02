@@ -1,6 +1,6 @@
 import {
   AlertTriangle, ArrowDownToLine, CheckCircle2, ExternalLink, Github, History,
-  PlugZap, RefreshCw, ShieldCheck,
+  Clock3, Pause, Play, PlugZap, RefreshCw, ShieldCheck,
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import type { AgentBridge } from "../hooks/useAgentBridge";
@@ -10,6 +10,8 @@ export function IntegrationsDashboard({ bridge }: { bridge: AgentBridge }) {
   const [repository, setRepository] = useState("");
   const [syncDirection, setSyncDirection] = useState<SyncDirection>("bidirectional");
   const [autoClose, setAutoClose] = useState(true);
+  const [backgroundSyncEnabled, setBackgroundSyncEnabled] = useState(true);
+  const [syncIntervalMinutes, setSyncIntervalMinutes] = useState(15);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +34,7 @@ export function IntegrationsDashboard({ bridge }: { bridge: AgentBridge }) {
     await run("connect", async () => {
       const connection = await bridge.createProviderConnection({
         provider: "github", repository, syncDirection, autoClose,
+        backgroundSyncEnabled, syncIntervalMinutes,
       });
       await bridge.testProviderConnection(connection.id);
       setRepository("");
@@ -89,6 +92,21 @@ export function IntegrationsDashboard({ bridge }: { bridge: AgentBridge }) {
                 <input type="checkbox" checked={autoClose} onChange={(event) => setAutoClose(event.target.checked)} className="h-4 w-4 accent-violet-400" />
                 Close linked GitHub Issues when their Taskloom cards are completed
               </label>
+              <div className="flex flex-wrap items-center gap-4 lg:col-span-3">
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <input type="checkbox" checked={backgroundSyncEnabled} onChange={(event) => setBackgroundSyncEnabled(event.target.checked)} className="h-4 w-4 accent-violet-400" />
+                  Automatically reconcile issues while Taskloom is open
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  Every
+                  <select aria-label="Automatic sync interval" disabled={!backgroundSyncEnabled} value={syncIntervalMinutes} onChange={(event) => setSyncIntervalMinutes(Number(event.target.value))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm disabled:opacity-50">
+                    <option value={5}>5 minutes</option>
+                    <option value={15}>15 minutes</option>
+                    <option value={30}>30 minutes</option>
+                    <option value={60}>1 hour</option>
+                  </select>
+                </label>
+              </div>
             </form>
           </div>
 
@@ -108,11 +126,23 @@ export function IntegrationsDashboard({ bridge }: { bridge: AgentBridge }) {
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${connection.status === "connected" ? "bg-emerald-950 text-emerald-300" : connection.status === "error" ? "bg-rose-950 text-rose-300" : "bg-slate-800 text-slate-300"}`}>{connection.status.replace("_", " ")}</span>
                     </div>
                     {connection.error && <p className="mt-3 text-xs text-rose-300">{connection.error}</p>}
-                    {connection.lastSyncAt && <p className="mt-3 text-xs text-slate-500">Last sync {new Date(connection.lastSyncAt).toLocaleString()}</p>}
+                    <div className="mt-3 space-y-1 rounded-xl border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-400">
+                      <p className="flex items-center gap-1.5"><Clock3 size={13} className={connection.backgroundSyncEnabled ? "text-emerald-400" : "text-slate-500"} /> Automatic sync {connection.backgroundSyncEnabled ? `every ${connection.syncIntervalMinutes} minutes` : "paused"}</p>
+                      {connection.lastSuccessAt && <p>Last healthy sync {new Date(connection.lastSuccessAt).toLocaleString()}</p>}
+                      {connection.backgroundSyncEnabled && connection.nextSyncAt && <p>Next attempt {new Date(connection.nextSyncAt).toLocaleString()}</p>}
+                      {connection.consecutiveFailures > 0 && <p className="text-amber-300">Retry backoff active · {connection.consecutiveFailures} consecutive failure{connection.consecutiveFailures === 1 ? "" : "s"}</p>}
+                    </div>
                     <div className="mt-4 flex flex-wrap gap-2">
                       <button disabled={busy !== null} onClick={() => void run(`test:${connection.id}`, async () => { await bridge.testProviderConnection(connection.id); setNotice(`${connection.repository} is reachable.`); })} className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold hover:bg-slate-800 disabled:opacity-50"><RefreshCw size={14} /> Test</button>
-                      {connection.syncDirection !== "outbound" && <button disabled={busy !== null || connection.status !== "connected"} onClick={() => void run(`import:${connection.id}`, async () => { const result = await bridge.syncProviderInbound(connection.id); setNotice(`Imported ${result.imported}, updated ${result.updated}, unchanged ${result.unchanged}.`); })} className="flex items-center gap-1.5 rounded-lg bg-cyan-400 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-50"><ArrowDownToLine size={14} /> Import issues</button>}
+                      {connection.syncDirection !== "outbound" && <button disabled={busy !== null || connection.status !== "connected"} onClick={() => void run(`import:${connection.id}`, async () => { const result = await bridge.syncProviderInbound(connection.id); setNotice(`Imported ${result.imported}, updated ${result.updated}, unchanged ${result.unchanged}, completed ${result.completed}, reopened ${result.reopened}.`); })} className="flex items-center gap-1.5 rounded-lg bg-cyan-400 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-50"><ArrowDownToLine size={14} /> Import issues</button>}
+                      {connection.syncDirection !== "outbound" && <button disabled={busy !== null} aria-label={`${connection.backgroundSyncEnabled ? "Pause" : "Resume"} automatic sync for ${connection.repository}`} onClick={() => void run(`auto:${connection.id}`, async () => { await bridge.updateProviderConnectionSync(connection.id, !connection.backgroundSyncEnabled, connection.syncIntervalMinutes); setNotice(`Automatic sync ${connection.backgroundSyncEnabled ? "paused" : "resumed"} for ${connection.repository}.`); })} className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold hover:bg-slate-800 disabled:opacity-50">{connection.backgroundSyncEnabled ? <Pause size={14} /> : <Play size={14} />} {connection.backgroundSyncEnabled ? "Pause auto-sync" : "Resume auto-sync"}</button>}
                     </div>
+                    {connection.syncDirection !== "outbound" && <label className="mt-3 flex items-center gap-2 text-xs text-slate-400">
+                      Interval
+                      <select aria-label={`Sync interval for ${connection.repository}`} disabled={busy !== null} value={connection.syncIntervalMinutes} onChange={(event) => void run(`interval:${connection.id}`, async () => { await bridge.updateProviderConnectionSync(connection.id, connection.backgroundSyncEnabled, Number(event.target.value)); setNotice(`Updated automatic sync interval for ${connection.repository}.`); })} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5">
+                        <option value={5}>5 minutes</option><option value={15}>15 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option>
+                      </select>
+                    </label>}
                   </article>
                 ))}
               </div>

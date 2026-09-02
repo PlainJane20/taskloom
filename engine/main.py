@@ -264,6 +264,11 @@ class ProviderConnection:
     enabled: bool = True
     status: str = "not_tested"
     last_sync_at: str | None = None
+    background_sync_enabled: bool = True
+    sync_interval_minutes: int = 15
+    next_sync_at: str | None = None
+    last_success_at: str | None = None
+    consecutive_failures: int = 0
     error: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -536,6 +541,11 @@ class StateStore:
                 enabled INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 last_sync_at TEXT,
+                background_sync_enabled INTEGER NOT NULL DEFAULT 1,
+                sync_interval_minutes INTEGER NOT NULL DEFAULT 15,
+                next_sync_at TEXT,
+                last_success_at TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -589,6 +599,17 @@ class StateStore:
         self._ensure_column("tasks", "progress_total", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("tasks", "version", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("tasks", "created_at", "TEXT")
+        self._ensure_column(
+            "provider_connections", "background_sync_enabled", "INTEGER NOT NULL DEFAULT 1",
+        )
+        self._ensure_column(
+            "provider_connections", "sync_interval_minutes", "INTEGER NOT NULL DEFAULT 15",
+        )
+        self._ensure_column("provider_connections", "next_sync_at", "TEXT")
+        self._ensure_column("provider_connections", "last_success_at", "TEXT")
+        self._ensure_column(
+            "provider_connections", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0",
+        )
         with self.connection:
             self.connection.execute(
                 "UPDATE tasks SET created_at = updated_at WHERE created_at IS NULL"
@@ -603,6 +624,12 @@ class StateStore:
                 """INSERT OR IGNORE INTO schema_migrations
                    (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)""",
                 (7, "provider-sync-foundation", "taskloom-v0.7-provider-sync",
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            self.connection.execute(
+                """INSERT OR IGNORE INTO schema_migrations
+                   (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)""",
+                (8, "provider-background-sync", "taskloom-v0.8-background-sync",
                  datetime.now(timezone.utc).isoformat()),
             )
 
@@ -1137,14 +1164,20 @@ class StateStore:
     def load_provider_connections(self) -> list[ProviderConnection]:
         rows = self.connection.execute(
             """SELECT id, provider, repository, sync_direction, auto_close, enabled,
-                      status, last_sync_at, error, created_at, updated_at
+                      status, last_sync_at, background_sync_enabled, sync_interval_minutes,
+                      next_sync_at, last_success_at, consecutive_failures, error,
+                      created_at, updated_at
                  FROM provider_connections ORDER BY created_at, rowid"""
         ).fetchall()
         return [ProviderConnection(
             id=row["id"], provider=row["provider"], repository=row["repository"],
             sync_direction=row["sync_direction"], auto_close=bool(row["auto_close"]),
             enabled=bool(row["enabled"]), status=row["status"],
-            last_sync_at=row["last_sync_at"], error=row["error"],
+            last_sync_at=row["last_sync_at"],
+            background_sync_enabled=bool(row["background_sync_enabled"]),
+            sync_interval_minutes=row["sync_interval_minutes"],
+            next_sync_at=row["next_sync_at"], last_success_at=row["last_success_at"],
+            consecutive_failures=row["consecutive_failures"], error=row["error"],
             created_at=row["created_at"], updated_at=row["updated_at"],
         ) for row in rows]
 
@@ -1156,17 +1189,28 @@ class StateStore:
             self.connection.execute(
                 """INSERT INTO provider_connections
                    (id, provider, repository, sync_direction, auto_close, enabled,
-                    status, last_sync_at, error, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, last_sync_at, background_sync_enabled, sync_interval_minutes,
+                    next_sync_at, last_success_at, consecutive_failures, error,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     provider=excluded.provider, repository=excluded.repository,
                     sync_direction=excluded.sync_direction, auto_close=excluded.auto_close,
                     enabled=excluded.enabled, status=excluded.status,
-                    last_sync_at=excluded.last_sync_at, error=excluded.error,
+                    last_sync_at=excluded.last_sync_at,
+                    background_sync_enabled=excluded.background_sync_enabled,
+                    sync_interval_minutes=excluded.sync_interval_minutes,
+                    next_sync_at=excluded.next_sync_at,
+                    last_success_at=excluded.last_success_at,
+                    consecutive_failures=excluded.consecutive_failures,
+                    error=excluded.error,
                     updated_at=excluded.updated_at""",
                 (connection.id, connection.provider, connection.repository,
                  connection.sync_direction, int(connection.auto_close), int(connection.enabled),
-                 connection.status, connection.last_sync_at, connection.error,
+                 connection.status, connection.last_sync_at,
+                 int(connection.background_sync_enabled), connection.sync_interval_minutes,
+                 connection.next_sync_at, connection.last_success_at,
+                 connection.consecutive_failures, connection.error,
                  connection.created_at, connection.updated_at),
             )
 
@@ -1432,6 +1476,7 @@ class TaskloomEngine:
         }
         self.providers: dict[str, IssueProvider] = providers or {"github": GitHubCLIAdapter()}
         self._run_lock = asyncio.Lock()
+        self._provider_syncing: set[str] = set()
         self._seed_defaults()
         self._recover_interrupted_state()
 
@@ -1669,6 +1714,11 @@ class TaskloomEngine:
             "repository": connection.repository, "syncDirection": connection.sync_direction,
             "autoClose": connection.auto_close, "enabled": connection.enabled,
             "status": connection.status, "lastSyncAt": connection.last_sync_at,
+            "backgroundSyncEnabled": connection.background_sync_enabled,
+            "syncIntervalMinutes": connection.sync_interval_minutes,
+            "nextSyncAt": connection.next_sync_at,
+            "lastSuccessAt": connection.last_success_at,
+            "consecutiveFailures": connection.consecutive_failures,
             "error": connection.error, "createdAt": connection.created_at,
             "updatedAt": connection.updated_at,
         }
@@ -2011,12 +2061,13 @@ class TaskloomEngine:
         """Keep interval and filesystem triggers active while the engine is running."""
         poll_seconds = max(5, int(os.environ.get("TASKLOOM_SCHEDULER_POLL_SECONDS", "15")))
         while True:
-            scheduled, watched, provider_retries = await asyncio.gather(
+            scheduled, watched, provider_retries, provider_syncs = await asyncio.gather(
                 self.run_due_triggers(), self.run_due_file_triggers(),
                 self.run_due_provider_retries(),
+                self.run_due_provider_syncs(),
             )
             started = [*scheduled, *watched]
-            if started or provider_retries:
+            if started or provider_retries or provider_syncs:
                 await emit({"type": "state_snapshot", "payload": self.state_payload()})
             await asyncio.sleep(poll_seconds)
 
@@ -2450,10 +2501,26 @@ class TaskloomEngine:
         return {"task": self.serialize_task(task), "worklog": self.serialize_worklog(worklog),
                 "disposition": "logged"}
 
-    async def sync_provider_inbound(self, connection: ProviderConnection) -> dict[str, int]:
+    @staticmethod
+    def _schedule_next_provider_sync(
+        connection: ProviderConnection, now: datetime, *, failed: bool = False,
+    ) -> None:
+        if failed:
+            connection.consecutive_failures += 1
+            multiplier = 2 ** min(connection.consecutive_failures, 5)
+            delay = min(connection.sync_interval_minutes * multiplier, 360)
+        else:
+            connection.consecutive_failures = 0
+            connection.last_success_at = now.isoformat()
+            delay = connection.sync_interval_minutes
+        connection.next_sync_at = (now + timedelta(minutes=delay)).isoformat()
+
+    async def sync_provider_inbound(
+        self, connection: ProviderConnection, *, automatic: bool = False,
+    ) -> dict[str, int]:
         if not connection.enabled:
             raise ProtocolError("connection_disabled", "Provider connection is disabled.")
-        if connection.status != "connected":
+        if connection.status != "connected" and not (automatic and connection.status == "error"):
             raise ProtocolError(
                 "connection_not_ready", "Test the provider connection before importing issues.",
             )
@@ -2475,11 +2542,13 @@ class TaskloomEngine:
         try:
             issues = await adapter.list_open_issues(connection.repository)
         except ProviderError as exc:
+            failed_at = datetime.now(timezone.utc)
             connection.status = "error"
             connection.error = str(exc)
+            self._schedule_next_provider_sync(connection, failed_at, failed=True)
             event.status = "failed"
             event.message = str(exc)
-            event.completed_at = datetime.now(timezone.utc).isoformat()
+            event.completed_at = failed_at.isoformat()
             self.state.save_provider_connection(connection)
             self.state.save_sync_event(event)
             self.sync_events = self.state.load_sync_events()
@@ -2488,7 +2557,10 @@ class TaskloomEngine:
         imported = 0
         updated = 0
         unchanged = 0
+        completed = 0
+        reopened = 0
         now = datetime.now(timezone.utc).isoformat()
+        open_external_ids = {issue.external_id for issue in issues}
         for issue in issues:
             key = (connection.id, issue.external_id)
             link = self.external_issue_links.get(key)
@@ -2528,6 +2600,11 @@ class TaskloomEngine:
                         task.version += 1
                         self.state.save_task(task)
                         changed = True
+                    if link.external_state == "closed" and task.status == "completed":
+                        task.status = "backlog"
+                        task.version += 1
+                        self.state.save_task(task)
+                        reopened += 1
                 updated += int(changed)
                 unchanged += int(not changed)
                 link.issue_number = issue.number
@@ -2538,19 +2615,91 @@ class TaskloomEngine:
             self.external_issue_links[key] = link
             self.state.save_external_issue_link(link)
 
+        # Open-issue listing is efficient but omits issues closed outside Taskloom.
+        # Confirm missing linked issues individually before reconciling their cards.
+        linked_to_connection = [
+            link for link in self.external_issue_links.values()
+            if link.connection_id == connection.id
+            and link.external_id not in open_external_ids
+            and link.external_state != "closed"
+        ]
+        try:
+            for link in linked_to_connection:
+                issue = await adapter.get_issue(connection.repository, link.issue_number)
+                if issue.state != "closed":
+                    continue
+                task = self.tasks.get(link.task_id)
+                if task is not None and task.status != "completed":
+                    task.status = "completed"
+                    task.version += 1
+                    self.state.save_task(task)
+                    completed += 1
+                link.external_state = issue.state
+                link.external_updated_at = issue.updated_at
+                link.last_synced_at = now
+                self.state.save_external_issue_link(link)
+        except ProviderError as exc:
+            failed_at = datetime.now(timezone.utc)
+            connection.status = "error"
+            connection.error = str(exc)
+            self._schedule_next_provider_sync(connection, failed_at, failed=True)
+            event.status = "failed"
+            event.message = str(exc)
+            event.completed_at = failed_at.isoformat()
+            self.state.save_provider_connection(connection)
+            self.state.save_sync_event(event)
+            self.sync_events = self.state.load_sync_events()
+            raise ProtocolError(exc.code, str(exc)) from exc
+
         connection.last_sync_at = now
         connection.status = "connected"
         connection.error = None
+        self._schedule_next_provider_sync(connection, datetime.fromisoformat(now))
         self.state.save_provider_connection(connection)
         event.status = "completed"
         event.message = (
-            f"Imported {imported}, updated {updated}, unchanged {unchanged} "
+            f"Imported {imported}, updated {updated}, unchanged {unchanged}, "
+            f"completed {completed}, reopened {reopened} "
             f"from {connection.repository}"
         )
         event.completed_at = now
         self.state.save_sync_event(event)
         self.sync_events = self.state.load_sync_events()
-        return {"imported": imported, "updated": updated, "unchanged": unchanged}
+        return {
+            "imported": imported, "updated": updated, "unchanged": unchanged,
+            "completed": completed, "reopened": reopened,
+        }
+
+    async def run_due_provider_syncs(
+        self, now: datetime | None = None,
+    ) -> list[dict[str, int]]:
+        """Reconcile due inbound connections without terminating the scheduler on failure."""
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        summaries: list[dict[str, int]] = []
+        for connection in tuple(self.provider_connections.values()):
+            if (
+                not connection.enabled
+                or not connection.background_sync_enabled
+                or connection.sync_direction == "outbound"
+                or connection.status not in {"connected", "error"}
+                or connection.id in self._provider_syncing
+            ):
+                continue
+            if connection.next_sync_at:
+                try:
+                    if datetime.fromisoformat(connection.next_sync_at).astimezone(timezone.utc) > current:
+                        continue
+                except ValueError:
+                    connection.next_sync_at = current.isoformat()
+            self._provider_syncing.add(connection.id)
+            try:
+                summaries.append(await self.sync_provider_inbound(connection, automatic=True))
+            except ProtocolError:
+                # The sync operation already persisted the health state and retry schedule.
+                summaries.append({})
+            finally:
+                self._provider_syncing.discard(connection.id)
+        return summaries
 
     async def _close_external_issue(
         self,
@@ -2703,6 +2852,10 @@ class TaskloomEngine:
                 provider=provider, repository=repository,
                 sync_direction=sync_direction,
                 auto_close=bool(payload.get("autoClose", True)),
+                background_sync_enabled=bool(payload.get("backgroundSyncEnabled", True)),
+                sync_interval_minutes=max(
+                    5, min(int(payload.get("syncIntervalMinutes", 15)), 1_440),
+                ),
             )
             self.provider_connections[connection.id] = connection
             self.state.save_provider_connection(connection)
@@ -2744,6 +2897,9 @@ class TaskloomEngine:
             connection.repository = result.get("repository", connection.repository)
             connection.status = "connected"
             connection.error = None
+            connection.consecutive_failures = 0
+            if connection.background_sync_enabled and connection.sync_direction != "outbound":
+                connection.next_sync_at = datetime.now(timezone.utc).isoformat()
             event.status = "completed"
             event.message = f"Connected to {connection.repository}"
             event.completed_at = datetime.now(timezone.utc).isoformat()
@@ -2752,6 +2908,29 @@ class TaskloomEngine:
             self.sync_events = self.state.load_sync_events()
             return [self._response(
                 request_id, "provider_connection_tested",
+                {"connection": self.serialize_provider_connection(connection)},
+            ), {"type": "state_snapshot", "payload": self.state_payload()}]
+        if kind == "update_provider_connection_sync":
+            self._require(payload, "connectionId")
+            connection = self.provider_connections.get(str(payload["connectionId"]))
+            if connection is None:
+                raise ProtocolError("connection_not_found", "Provider connection does not exist.")
+            interval = int(payload.get("syncIntervalMinutes", connection.sync_interval_minutes))
+            if interval < 5 or interval > 1_440:
+                raise ProtocolError(
+                    "invalid_sync_interval", "Automatic sync interval must be 5 to 1,440 minutes.",
+                )
+            connection.background_sync_enabled = bool(
+                payload.get("backgroundSyncEnabled", connection.background_sync_enabled),
+            )
+            connection.sync_interval_minutes = interval
+            if connection.background_sync_enabled and connection.sync_direction != "outbound":
+                connection.next_sync_at = datetime.now(timezone.utc).isoformat()
+            else:
+                connection.next_sync_at = None
+            self.state.save_provider_connection(connection)
+            return [self._response(
+                request_id, "provider_connection_updated",
                 {"connection": self.serialize_provider_connection(connection)},
             ), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "sync_provider_inbound":

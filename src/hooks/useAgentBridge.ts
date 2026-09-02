@@ -49,9 +49,11 @@ export interface AgentBridge {
   deleteFileTrigger: (triggerId: string) => Promise<void>;
   createProviderConnection: (input: {
     provider: "github"; repository: string; syncDirection: SyncDirection; autoClose: boolean;
+    backgroundSyncEnabled: boolean; syncIntervalMinutes: number;
   }) => Promise<ProviderConnection>;
   testProviderConnection: (connectionId: string) => Promise<ProviderConnection>;
-  syncProviderInbound: (connectionId: string) => Promise<{ imported: number; updated: number; unchanged: number }>;
+  updateProviderConnectionSync: (connectionId: string, backgroundSyncEnabled: boolean, syncIntervalMinutes: number) => Promise<ProviderConnection>;
+  syncProviderInbound: (connectionId: string) => Promise<{ imported: number; updated: number; unchanged: number; completed: number; reopened: number }>;
   syncTaskOutbound: (taskId: string, force?: boolean) => Promise<SyncEvent[]>;
   refresh: () => Promise<void>;
 }
@@ -389,6 +391,7 @@ export function useAgentBridge(): AgentBridge {
 
   const createProviderConnection = useCallback(async (input: {
     provider: "github"; repository: string; syncDirection: SyncDirection; autoClose: boolean;
+    backgroundSyncEnabled: boolean; syncIntervalMinutes: number;
   }) => {
     const response = await send({ type: "create_provider_connection", payload: input });
     await send({ type: "list_state", payload: {} });
@@ -401,11 +404,22 @@ export function useAgentBridge(): AgentBridge {
     return response.payload?.connection as unknown as ProviderConnection;
   }, [send]);
 
+  const updateProviderConnectionSync = useCallback(async (
+    connectionId: string, backgroundSyncEnabled: boolean, syncIntervalMinutes: number,
+  ) => {
+    const response = await send({
+      type: "update_provider_connection_sync",
+      payload: { connectionId, backgroundSyncEnabled, syncIntervalMinutes },
+    });
+    await send({ type: "list_state", payload: {} });
+    return response.payload?.connection as unknown as ProviderConnection;
+  }, [send]);
+
   const syncProviderInbound = useCallback(async (connectionId: string) => {
     const response = await send({ type: "sync_provider_inbound", payload: { connectionId } });
     await send({ type: "list_state", payload: {} });
     return response.payload?.summary as unknown as {
-      imported: number; updated: number; unchanged: number;
+      imported: number; updated: number; unchanged: number; completed: number; reopened: number;
     };
   }, [send]);
 
@@ -423,7 +437,7 @@ export function useAgentBridge(): AgentBridge {
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
     runWorkflow, retryWorkflow, cancelWorkflow, createTrigger, setTriggerEnabled,
     runTriggerNow, deleteTrigger, createFileTrigger, setFileTriggerEnabled, deleteFileTrigger,
-    createProviderConnection, testProviderConnection,
+    createProviderConnection, testProviderConnection, updateProviderConnectionSync,
     syncProviderInbound,
     syncTaskOutbound,
     refresh,
