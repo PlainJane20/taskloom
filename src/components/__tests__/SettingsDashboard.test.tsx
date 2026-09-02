@@ -19,7 +19,7 @@ describe("SettingsDashboard", () => {
   it("saves a trimmed local configuration and completes onboarding", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
-    render(<SettingsDashboard settings={DEFAULT_SETTINGS} health={null} bridgeStatus="connected" onSave={onSave} onCheck={vi.fn()} />);
+    render(<SettingsDashboard settings={DEFAULT_SETTINGS} health={null} bridgeStatus="connected" onSave={onSave} onCheck={vi.fn()} onReplayWelcome={vi.fn()} />);
 
     await user.type(screen.getByLabelText(/workspace folder/i), "  /tmp/taskloom-workspace  ");
     await user.selectOptions(screen.getByLabelText(/default ai provider/i), "openai");
@@ -36,14 +36,26 @@ describe("SettingsDashboard", () => {
   it("runs and renders local environment health checks", async () => {
     const user = userEvent.setup();
     const onCheck = vi.fn().mockResolvedValue(health);
-    const { rerender } = render(<SettingsDashboard settings={DEFAULT_SETTINGS} health={null} bridgeStatus="connected" onSave={vi.fn()} onCheck={onCheck} />);
+    const { rerender } = render(<SettingsDashboard settings={DEFAULT_SETTINGS} health={null} bridgeStatus="connected" onSave={vi.fn()} onCheck={onCheck} onReplayWelcome={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: /run health checks/i }));
     expect(onCheck).toHaveBeenCalledOnce();
 
-    rerender(<SettingsDashboard settings={DEFAULT_SETTINGS} health={health} bridgeStatus="connected" onSave={vi.fn()} onCheck={onCheck} />);
+    rerender(<SettingsDashboard settings={DEFAULT_SETTINGS} health={health} bridgeStatus="connected" onSave={vi.fn()} onCheck={onCheck} onReplayWelcome={vi.fn()} />);
     expect(screen.getByText("READY")).toBeInTheDocument();
     expect(screen.getByText("/Users/example/TaskloomWorkspace")).toBeInTheDocument();
     expect(screen.getByText("GitHub CLI")).toBeInTheDocument();
+  });
+
+  it("replays onboarding without changing saved configuration", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const onReplayWelcome = vi.fn();
+    render(<SettingsDashboard settings={{ ...DEFAULT_SETTINGS, onboardingComplete: true }} health={health} bridgeStatus="connected" onSave={onSave} onCheck={vi.fn()} onReplayWelcome={onReplayWelcome} />);
+
+    await user.click(screen.getByRole("button", { name: /replay welcome tour/i }));
+
+    expect(onReplayWelcome).toHaveBeenCalledOnce();
+    expect(onSave).not.toHaveBeenCalled();
   });
 });

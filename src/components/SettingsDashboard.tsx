@@ -1,16 +1,17 @@
-import { CheckCircle2, CircleAlert, RefreshCw, Save, Settings2, ShieldCheck } from "lucide-react";
+import { CheckCircle2, CircleAlert, RefreshCw, RotateCcw, Save, Settings2, ShieldCheck } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import type { BridgeStatus } from "../hooks/useAgentBridge";
 import type { AppSettings, HealthReport } from "../types";
 
 export function SettingsDashboard({
-  settings, health, bridgeStatus, onSave, onCheck,
+  settings, health, bridgeStatus, onSave, onCheck, onReplayWelcome,
 }: {
   settings: AppSettings;
   health: HealthReport | null;
   bridgeStatus: BridgeStatus;
   onSave: (settings: AppSettings) => void;
   onCheck: () => Promise<HealthReport>;
+  onReplayWelcome: () => void;
 }) {
   const [draft, setDraft] = useState(settings);
   const [checking, setChecking] = useState(false);
@@ -80,7 +81,10 @@ export function SettingsDashboard({
             <input required type="url" value={draft.ollamaUrl} onChange={(event) => setDraft({ ...draft, ollamaUrl: event.target.value })} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm" />
           </label>
           {draft.defaultProvider === "openai" && <p className="rounded-lg border border-amber-900/70 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">For safety, configure <code>OPENAI_API_KEY</code> in the environment that launches Taskloom. The key is not written to Taskloom storage.</p>}
-          <button className="flex items-center gap-2 rounded-lg bg-amber-300 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-amber-200"><Save size={16} /> Save and reconnect</button>
+          <div className="flex flex-wrap gap-3">
+            <button className="flex items-center gap-2 rounded-lg bg-amber-300 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-amber-200"><Save size={16} /> Save and reconnect</button>
+            <button type="button" onClick={onReplayWelcome} className="flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold hover:bg-slate-800"><RotateCcw size={16} /> Replay welcome tour</button>
+          </div>
         </form>
 
         <aside className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">

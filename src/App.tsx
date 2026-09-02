@@ -43,7 +43,7 @@ export default function App() {
         <button onClick={() => setView("settings")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition ${view === "settings" ? "bg-amber-300 text-slate-950" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"}`}><Settings2 size={16} /> Settings</button>
       </nav>
       {bridge.error && <p role="alert" className="mx-auto mb-4 max-w-[1600px] rounded-lg border border-rose-900 bg-rose-950/50 px-4 py-3 text-sm text-rose-300">{bridge.error}</p>}
-      {view === "automations" ? <AutomationDashboard bridge={bridge} /> : view === "integrations" ? <IntegrationsDashboard bridge={bridge} /> : view === "settings" ? <SettingsDashboard settings={settings} health={bridge.health} bridgeStatus={bridge.status} onSave={updateSettings} onCheck={bridge.runHealthCheck} /> : <KanbanBoard bridge={bridge} defaultProvider={settings.defaultProvider} />}
+      {view === "automations" ? <AutomationDashboard bridge={bridge} /> : view === "integrations" ? <IntegrationsDashboard bridge={bridge} /> : view === "settings" ? <SettingsDashboard settings={settings} health={bridge.health} bridgeStatus={bridge.status} onSave={updateSettings} onCheck={bridge.runHealthCheck} onReplayWelcome={() => updateSettings({ ...settings, onboardingComplete: false })} /> : <KanbanBoard bridge={bridge} defaultProvider={settings.defaultProvider} />}
       {!settings.onboardingComplete && <OnboardingModal
         settings={settings}
         health={bridge.health}

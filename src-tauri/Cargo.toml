@@ -1,6 +1,6 @@
 [package]
 name = "taskloom"
-version = "0.10.2"
+version = "0.10.3"
 description = "Local-first visual agent orchestrator"
 authors = ["Taskloom contributors"]
 edition = "2021"

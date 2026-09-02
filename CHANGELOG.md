@@ -3,6 +3,16 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.3] - 2026-09-02
+
+### Added
+
+- Adds a **Replay welcome tour** action in Settings so users can reopen the branded onboarding and readiness walkthrough without clearing tasks or local configuration.
+
+### Verification
+
+- Expands automated coverage to 104 tests, including a regression test that confirms replaying onboarding does not overwrite saved settings.
+
 ## [0.10.2] - 2026-09-02
 
 ### Fixed
@@ -243,6 +253,7 @@ All notable Taskloom changes are documented here. This project follows
 - Tauri, React, TypeScript, Tailwind CSS, and Python JSONL desktop MVP.
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
+[0.10.3]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.3
 [0.10.2]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.2
 [0.10.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.1
 [0.10.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.0

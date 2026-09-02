@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.10.2-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.10.2)
+  [![Release](https://img.shields.io/badge/release-v0.10.3-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.10.3)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.10.2 is a working governed multi-agent automation platform with guided onboarding, consistent application branding, in-app local configuration, environment health checks, durable bidirectional GitHub Issues synchronization, and inspectable execution history. Every captured command and file mutation remains reviewable and workspace-confined. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, recoverable snapshots, and local readiness checks are covered by 103 automated tests.
+> **Project status:** Taskloom v0.10.3 is a working governed multi-agent automation platform with replayable guided onboarding, consistent application branding, in-app local configuration, environment health checks, durable bidirectional GitHub Issues synchronization, and inspectable execution history. Every captured command and file mutation remains reviewable and workspace-confined. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, recoverable snapshots, and local readiness checks are covered by 104 automated tests.
 
 ## Why Taskloom
 
