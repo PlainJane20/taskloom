@@ -3,9 +3,10 @@ import { documentDir, join, resourceDir } from "@tauri-apps/api/path";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import type {
   AgentProfile, AgentSession, AgentTask, ApprovalRequest, AutomationTrigger, BridgeRequest, BridgeResponse,
-  ExternalIssueLink, FileTrigger, PlanApprovalRequest, ProviderConnection, SyncDirection, SyncEvent,
+  AppSettings, ExternalIssueLink, FileTrigger, HealthReport, PlanApprovalRequest, ProviderConnection, SyncDirection, SyncEvent,
   Workflow, WorkflowRun,
 } from "../types";
+import { DEFAULT_SETTINGS } from "../settings";
 
 export type BridgeStatus = "connecting" | "connected" | "error" | "stopped";
 
@@ -23,6 +24,7 @@ export interface AgentBridge {
   providerConnections: ProviderConnection[];
   syncEvents: SyncEvent[];
   externalIssueLinks: ExternalIssueLink[];
+  health: HealthReport | null;
   error: string | null;
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
@@ -55,6 +57,7 @@ export interface AgentBridge {
   updateProviderConnectionSync: (connectionId: string, backgroundSyncEnabled: boolean, syncIntervalMinutes: number) => Promise<ProviderConnection>;
   syncProviderInbound: (connectionId: string) => Promise<{ imported: number; updated: number; unchanged: number; completed: number; reopened: number }>;
   syncTaskOutbound: (taskId: string, force?: boolean) => Promise<SyncEvent[]>;
+  runHealthCheck: () => Promise<HealthReport>;
   refresh: () => Promise<void>;
 }
 
@@ -68,7 +71,7 @@ function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-export function useAgentBridge(): AgentBridge {
+export function useAgentBridge(settings: AppSettings = DEFAULT_SETTINGS): AgentBridge {
   const [status, setStatus] = useState<BridgeStatus>("connecting");
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [sessions, setSessions] = useState<AgentSession[]>([]);
@@ -82,6 +85,7 @@ export function useAgentBridge(): AgentBridge {
   const [providerConnections, setProviderConnections] = useState<ProviderConnection[]>([]);
   const [syncEvents, setSyncEvents] = useState<SyncEvent[]>([]);
   const [externalIssueLinks, setExternalIssueLinks] = useState<ExternalIssueLink[]>([]);
+  const [health, setHealth] = useState<HealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const childRef = useRef<Child | null>(null);
   const pendingRef = useRef(new Map<string, PendingRequest>());
@@ -107,6 +111,9 @@ export function useAgentBridge(): AgentBridge {
     }
     if (message.type === "plan_approval_required" && message.payload) {
       setPlanApproval(message.payload as unknown as PlanApprovalRequest);
+    }
+    if (message.type === "health_report" && message.payload?.health) {
+      setHealth(message.payload.health as unknown as HealthReport);
     }
     if ((message.type === "task_list" || message.type === "state_snapshot") && message.payload) {
       const restoredTasks = message.payload.tasks;
@@ -168,13 +175,21 @@ export function useAgentBridge(): AgentBridge {
         const enginePath = isDevelopment
           ? "engine/main.py"
           : await join(await resourceDir(), "engine", "main.py");
-        const workspacePath = isDevelopment
+        const workspacePath = settings.workspacePath.trim() || (isDevelopment
           ? "."
-          : await join(await documentDir(), "TaskloomWorkspace");
+          : await join(await documentDir(), "TaskloomWorkspace"));
         const command = Command.create(
           "python3",
           ["-u", enginePath, "--workspace", workspacePath],
-          isDevelopment ? { cwd: ".." } : undefined,
+          {
+            ...(isDevelopment ? { cwd: ".." } : {}),
+            env: {
+              TASKLOOM_DEFAULT_PROVIDER: settings.defaultProvider,
+              TASKLOOM_OLLAMA_URL: settings.ollamaUrl,
+              TASKLOOM_OLLAMA_MODEL: settings.ollamaModel,
+              TASKLOOM_OPENAI_MODEL: settings.openaiModel,
+            },
+          },
         );
         command.stdout.on("data", receive);
         command.stderr.on("data", (line) => console.warn(`[engine] ${line}`));
@@ -197,6 +212,7 @@ export function useAgentBridge(): AgentBridge {
         setStatus("connected");
         setError(null);
         await child.write(`${JSON.stringify({ id: "bootstrap-state", type: "list_state", payload: {} })}\n`);
+        await child.write(`${JSON.stringify({ id: "bootstrap-health", type: "health_check", payload: {} })}\n`);
       } catch (cause) {
         setStatus("error");
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -214,7 +230,7 @@ export function useAgentBridge(): AgentBridge {
       }
       pendingRef.current.clear();
     };
-  }, [receive]);
+  }, [receive, settings.defaultProvider, settings.ollamaModel, settings.ollamaUrl, settings.openaiModel, settings.workspacePath]);
 
   const send = useCallback(async (request: BridgeRequest): Promise<BridgeResponse> => {
     const child = childRef.current;
@@ -429,9 +445,16 @@ export function useAgentBridge(): AgentBridge {
     return response.payload?.events as unknown as SyncEvent[];
   }, [send]);
 
+  const runHealthCheck = useCallback(async () => {
+    const response = await send({ type: "health_check", payload: {} });
+    const report = response.payload?.health as unknown as HealthReport;
+    setHealth(report);
+    return report;
+  }, [send]);
+
   return {
     status, tasks, sessions, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
-    providerConnections, syncEvents, externalIssueLinks,
+    providerConnections, syncEvents, externalIssueLinks, health,
     error, send,
     createTask, runTask, completeTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
@@ -440,6 +463,7 @@ export function useAgentBridge(): AgentBridge {
     createProviderConnection, testProviderConnection, updateProviderConnectionSync,
     syncProviderInbound,
     syncTaskOutbound,
+    runHealthCheck,
     refresh,
   };
 }

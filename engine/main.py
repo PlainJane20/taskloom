@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -1790,6 +1791,109 @@ class TaskloomEngine:
             ],
         }
 
+    @staticmethod
+    def _health_check(
+        check_id: str, label: str, status: str, detail: str, required: bool,
+    ) -> dict[str, Any]:
+        return {
+            "id": check_id, "label": label, "status": status,
+            "detail": detail, "required": required,
+        }
+
+    @staticmethod
+    def _ollama_tags_url(generate_url: str) -> str:
+        parsed = urllib.parse.urlsplit(generate_url)
+        path = parsed.path
+        if path.endswith("/api/generate"):
+            path = f"{path[:-len('/api/generate')]}/api/tags"
+        else:
+            path = "/api/tags"
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+    def _check_ollama(self) -> list[str]:
+        url = os.environ.get("TASKLOOM_OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
+        request = urllib.request.Request(self._ollama_tags_url(url), method="GET")
+        with urllib.request.urlopen(request, timeout=3) as response:
+            data = json.loads(response.read())
+        return [str(item.get("name", "")) for item in data.get("models", [])]
+
+    async def _check_github(self) -> tuple[str, str]:
+        if shutil.which("gh") is None:
+            return "warning", "GitHub CLI is not installed; issue synchronization is optional."
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "gh", "auth", "status", "--hostname", "github.com",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(process.communicate(), timeout=5)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.communicate()
+            return "warning", "GitHub CLI authentication check timed out."
+        except OSError as cause:
+            return "warning", f"GitHub CLI could not start: {cause}"
+        if process.returncode == 0:
+            return "ready", "GitHub CLI is authenticated."
+        return "warning", "Run `gh auth login` to enable GitHub Issues synchronization."
+
+    async def health_report(self) -> dict[str, Any]:
+        """Return readiness diagnostics without exposing credentials or file contents."""
+        checks: list[dict[str, Any]] = []
+        workspace_ready = self.workspace.is_dir() and os.access(self.workspace, os.R_OK | os.W_OK)
+        checks.append(self._health_check(
+            "workspace", "Workspace", "ready" if workspace_ready else "error",
+            f"Readable and writable: {self.workspace}" if workspace_ready
+            else f"Taskloom cannot read and write: {self.workspace}", True,
+        ))
+        checks.append(self._health_check(
+            "python", "Python engine", "ready",
+            f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}", True,
+        ))
+
+        provider = os.environ.get("TASKLOOM_DEFAULT_PROVIDER", "ollama")
+        ollama_required = provider == "ollama"
+        ollama_model = os.environ.get("TASKLOOM_OLLAMA_MODEL", "llama3.2")
+        try:
+            models = await asyncio.to_thread(self._check_ollama)
+            checks.append(self._health_check(
+                "ollama", "Ollama service", "ready", "Local Ollama service is reachable.",
+                ollama_required,
+            ))
+            model_found = any(name == ollama_model or name.startswith(f"{ollama_model}:") for name in models)
+            checks.append(self._health_check(
+                "model", "Default model", "ready" if model_found else ("error" if ollama_required else "warning"),
+                f"{ollama_model} is installed." if model_found
+                else f"Install it with `ollama pull {ollama_model}`.", ollama_required,
+            ))
+        except (OSError, ValueError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            detail = "Ollama is not reachable. Start Ollama before running local-agent tasks."
+            checks.append(self._health_check(
+                "ollama", "Ollama service", "error" if ollama_required else "warning",
+                detail, ollama_required,
+            ))
+            checks.append(self._health_check(
+                "model", "Default model", "error" if ollama_required else "warning",
+                f"Could not verify {ollama_model}: {type(exc).__name__}.", ollama_required,
+            ))
+
+        if provider == "openai":
+            configured = bool(os.environ.get("OPENAI_API_KEY"))
+            checks.append(self._health_check(
+                "openai", "OpenAI access", "ready" if configured else "error",
+                "OPENAI_API_KEY is configured." if configured
+                else "Set OPENAI_API_KEY before starting Taskloom.", True,
+            ))
+        github_status, github_detail = await self._check_github()
+        checks.append(self._health_check(
+            "github", "GitHub CLI", github_status, github_detail, False,
+        ))
+        return {
+            "checkedAt": datetime.now(timezone.utc).isoformat(),
+            "ready": all(item["status"] != "error" for item in checks if item["required"]),
+            "workspace": str(self.workspace),
+            "checks": checks,
+        }
+
     def _record_event(
         self, run_id: str, event_type: str, message: str, step_run_id: str | None = None,
     ) -> ExecutionEvent:
@@ -2836,6 +2940,10 @@ class TaskloomEngine:
         payload = message.get("payload", {})
         if kind == "ping":
             return [self._response(request_id, "pong", {"workspace": str(self.workspace)})]
+        if kind == "health_check":
+            return [self._response(
+                request_id, "health_report", {"health": await self.health_report()},
+            )]
         if kind in {"list_tasks", "list_state"}:
             response_type = "task_list" if kind == "list_tasks" else "state_snapshot"
             return [self._response(request_id, response_type, self.state_payload())]

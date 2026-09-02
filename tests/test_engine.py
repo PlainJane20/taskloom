@@ -1078,3 +1078,48 @@ def test_v6_schema_migrates_legacy_tasks_without_data_loss(tmp_path: Path) -> No
         "SELECT name FROM schema_migrations WHERE version = 6"
     ).fetchone()
     assert migration["name"] == "governance-foundation"
+
+
+@pytest.mark.asyncio
+async def test_health_report_marks_configured_local_environment_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TASKLOOM_DEFAULT_PROVIDER", "ollama")
+    monkeypatch.setenv("TASKLOOM_OLLAMA_MODEL", "llama3.2")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    monkeypatch.setattr(engine, "_check_ollama", lambda: ["llama3.2:latest"])
+
+    async def github_ready() -> tuple[str, str]:
+        return "ready", "GitHub CLI is authenticated."
+
+    monkeypatch.setattr(engine, "_check_github", github_ready)
+    responses = await engine.handle({"id": "health-1", "type": "health_check", "payload": {}})
+
+    payload = responses[0]["payload"]
+    assert responses[0]["type"] == "health_report"
+    assert payload["health"]["ready"] is True
+    assert payload["health"]["workspace"] == str(tmp_path.resolve())
+    assert {check["id"] for check in payload["health"]["checks"]} == {
+        "workspace", "python", "ollama", "model", "github",
+    }
+
+
+@pytest.mark.asyncio
+async def test_health_report_blocks_readiness_when_ollama_model_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TASKLOOM_DEFAULT_PROVIDER", "ollama")
+    monkeypatch.setenv("TASKLOOM_OLLAMA_MODEL", "missing-model")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    monkeypatch.setattr(engine, "_check_ollama", lambda: ["llama3.2:latest"])
+
+    async def github_optional() -> tuple[str, str]:
+        return "warning", "GitHub CLI is optional."
+
+    monkeypatch.setattr(engine, "_check_github", github_optional)
+    report = await engine.health_report()
+
+    assert report["ready"] is False
+    model = next(check for check in report["checks"] if check["id"] == "model")
+    assert model["status"] == "error"
+    assert model["required"] is True

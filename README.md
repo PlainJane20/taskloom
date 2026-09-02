@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.9.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.9.0)
+  [![Release](https://img.shields.io/badge/release-v0.10.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.10.0)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.9.0 is a working governed multi-agent automation platform with durable bidirectional GitHub Issues synchronization and inspectable execution history. Every captured command, output stream, exit result, timestamp, and digest is available from its task card; trace content is redacted and bounded before persistence. Cooperative pause, resume, and stop controls stay attached to agent work in every swimlane view, with an explicit confirmation boundary for terminal stop requests. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, and recoverable snapshots are covered by 95 automated tests.
+> **Project status:** Taskloom v0.10.0 is a working governed multi-agent automation platform with guided onboarding, in-app local configuration, environment health checks, durable bidirectional GitHub Issues synchronization, and inspectable execution history. Every captured command and file mutation remains reviewable and workspace-confined. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, recoverable snapshots, and local readiness checks are covered by 103 automated tests.
 
 ## Why Taskloom
 
@@ -41,6 +41,7 @@ Taskloom moves those controls into a desktop automation studio:
 - **Close the loop with GitHub** — import Issues as linked cards and safely reflect completed work back to GitHub.
 - **Stay synchronized automatically** — reconcile provider work on a visible schedule with pause controls, health state, and bounded retry backoff.
 - **Inspect and govern execution** — review complete per-task terminal histories and control capable agent sessions directly from their cards.
+- **Start without configuration files** — choose a local workspace and model in the app, then verify the environment with actionable health checks.
 
 Taskloom is not another model competing with coding agents. It is the visual policy and orchestration layer above them.
 
@@ -202,6 +203,8 @@ ollama ls
 TASKLOOM_OLLAMA_MODEL=qwen2.5-coder:7b npm run tauri dev
 ```
 
+On first launch, Taskloom explains its safety boundaries and checks the local workspace, Python runtime, model provider, and optional GitHub CLI connection. You can keep the recommended setup or open **Settings** to choose a workspace and provider without editing configuration files. OpenAI users keep `OPENAI_API_KEY` in their launch environment; Taskloom never writes it to application settings.
+
 ### 4. Run your first agent team
 
 Open **Automations**, choose **Safe delivery pipeline**, and use:
@@ -334,7 +337,7 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **95 automated tests**: 70 Python/MCP tests and 25 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **103 automated tests**: 72 Python/MCP tests and 31 React/settings interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 
@@ -348,12 +351,15 @@ taskloom/
 │   ├── components/
 │   │   ├── AutomationDashboard.tsx      # Agents, workflows, schedules, file watches, run history
 │   │   ├── IntegrationsDashboard.tsx     # GitHub connections, imports, conflicts, sync history
+│   │   ├── SettingsDashboard.tsx         # Local provider configuration and readiness diagnostics
+│   │   ├── OnboardingModal.tsx           # Guided first-run safety and setup experience
 │   │   ├── PlanApprovalModal.tsx        # Approve-once workflow boundary
 │   │   ├── KanbanBoard.tsx              # Individual task workflow
 │   │   ├── TraceModal.tsx                # Navigable redacted terminal history
 │   │   └── ApprovalModal.tsx            # Before/after mutation boundary
 │   ├── hooks/
 │   │   └── useAgentBridge.ts            # Python process and JSONL lifecycle
+│   ├── settings.ts                       # Validated local-only application preferences
 │   └── types.ts                         # Shared frontend protocol types
 ├── src-tauri/
 │   ├── capabilities/default.json        # Restricted native permissions
@@ -398,7 +404,7 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [x] Agent/session/branch swimlanes, collision warnings, complete trace history, card-level cooperative controls, and Git/PR badges
 - [x] Bidirectional GitHub Issues sync with automatic reconciliation, remote close/reopen handling, conflicts, health state, and durable retries
 - [ ] Task editing, deletion, filtering, and run history
-- [ ] In-app workspace and model settings
+- [x] Guided onboarding, in-app workspace/model settings, and local environment health checks
 - [ ] Syntax-aware diffs with line-level navigation
 - [ ] Custom structured validation rules beyond process exit status
 - [ ] GitHub and webhook triggers
@@ -420,7 +426,7 @@ Taskloom demonstrates several production-oriented software engineering challenge
 - Built a policy-driven mutation interceptor supporting four autonomy levels while preserving canonical path containment, atomic writes, durable approvals, and pre-write snapshots.
 - Coordinated state across React, a Python workflow state machine, and migration-safe SQLite tables while serializing local inference to control CPU/GPU pressure.
 - Built a credential-isolated provider boundary with idempotent reconciliation, optimistic conflict checks, exponential retries, and durable sync auditing.
-- Established 95 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
+- Established 103 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
 
 ## Contributing
 

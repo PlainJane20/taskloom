@@ -10,6 +10,34 @@ export type TaskStatus =
 export type GovernanceState = "accepted" | "pending_review" | "rejected";
 export type AgentSessionStatus = "active" | "waiting_for_human" | "error_stuck" | "idle" | "completed";
 
+export type LLMProvider = "ollama" | "openai";
+
+export interface AppSettings {
+  workspacePath: string;
+  defaultProvider: LLMProvider;
+  ollamaUrl: string;
+  ollamaModel: string;
+  openaiModel: string;
+  onboardingComplete: boolean;
+}
+
+export type HealthCheckStatus = "ready" | "warning" | "error";
+
+export interface HealthCheck {
+  id: "workspace" | "python" | "ollama" | "model" | "github" | string;
+  label: string;
+  status: HealthCheckStatus;
+  detail: string;
+  required: boolean;
+}
+
+export interface HealthReport {
+  checkedAt: string;
+  ready: boolean;
+  workspace: string;
+  checks: HealthCheck[];
+}
+
 export interface TaskLink {
   id: string;
   kind: "commit" | "pull_request" | "issue" | string;
@@ -66,7 +94,7 @@ export interface AgentTask {
   prompt: string;
   status: TaskStatus;
   filePath?: string | null;
-  provider?: "openai" | "ollama";
+  provider?: LLMProvider;
   error?: string | null;
   source: "manual" | "workflow" | "mcp" | "provider" | string;
   governanceState: GovernanceState;

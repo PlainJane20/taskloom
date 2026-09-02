@@ -3,6 +3,26 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-09-02
+
+### Added
+
+- A guided first-run experience that explains Taskloom's local workspace, multi-agent workflow, and human-approval safety model.
+- An in-app Settings workspace for choosing the workspace folder, Ollama or OpenAI, model names, and the local Ollama endpoint.
+- Local readiness diagnostics for workspace access, Python, Ollama connectivity, configured model availability, OpenAI access, and optional GitHub CLI authentication.
+- A typed `health_check` JSONL request and `health_report` response shared by the React/Tauri interface and Python engine.
+
+### Privacy and reliability
+
+- Keeps application preferences in local desktop storage and never persists OpenAI keys in Taskloom settings.
+- Reconnects the Python engine with the selected workspace and provider configuration after settings are saved.
+- Treats optional GitHub connectivity separately from required model and workspace checks so unrelated integrations do not block local work.
+
+### Verification
+
+- Expands automated coverage to 103 tests: 72 Python/MCP tests and 31 React/settings interactions.
+- Adds regression coverage for ready and missing-model health reports, malformed settings recovery, preference persistence, settings updates, and onboarding paths.
+
 ## [0.9.0] - 2026-09-02
 
 ### Added
@@ -210,6 +230,7 @@ All notable Taskloom changes are documented here. This project follows
 - Tauri, React, TypeScript, Tailwind CSS, and Python JSONL desktop MVP.
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
+[0.10.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.0
 [0.9.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.9.0
 [0.8.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.8.1
 [0.4.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0

@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import { AlertTriangle, CheckCircle2, CirclePlay, ExternalLink, GitCommit, Pause, Play, Plus, ShieldAlert, Square, Terminal, X } from "lucide-react";
 import type { AgentBridge } from "../hooks/useAgentBridge";
-import type { AgentSession, AgentTask, TaskStatus } from "../types";
+import type { AgentSession, AgentTask, LLMProvider, TaskStatus } from "../types";
 import { ApprovalModal, type ApprovalDecisionPayload } from "./ApprovalModal";
 import { TraceModal, type TraceEntry } from "./TraceModal";
 
@@ -107,7 +107,7 @@ function TaskCard({ task, session, run, complete, requestControl, disabled, coll
   );
 }
 
-export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
+export function KanbanBoard({ bridge, defaultProvider = "ollama" }: { bridge: AgentBridge; defaultProvider?: LLMProvider }) {
   const [showForm, setShowForm] = useState(false);
   const [pendingCompletion, setPendingCompletion] = useState<AgentTask | null>(null);
   const [pendingControl, setPendingControl] = useState<{ session: AgentSession; action: "pause" | "resume" | "kill" } | null>(null);
@@ -231,7 +231,7 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
           <label className="block text-sm">Title<input required name="title" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Update onboarding copy" /></label>
           <label className="block text-sm">Instruction<textarea required name="prompt" rows={4} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Make the introduction clearer and more concise." /></label>
           <label className="block text-sm">Workspace-relative file<input required name="filePath" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" placeholder="docs/onboarding.md" /></label>
-          <label className="block text-sm">Provider<select name="provider" defaultValue="ollama" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"><option value="ollama">Ollama (local)</option><option value="openai">OpenAI</option></select></label>
+          <label className="block text-sm">Provider<select name="provider" defaultValue={defaultProvider} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"><option value="ollama">Ollama (local)</option><option value="openai">OpenAI</option></select></label>
           <button disabled={busy} className="w-full rounded-lg bg-cyan-400 py-2 font-bold text-slate-950 disabled:opacity-50">Add to backlog</button>
         </form>
       </div>}
