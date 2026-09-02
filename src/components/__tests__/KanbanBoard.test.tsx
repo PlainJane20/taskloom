@@ -27,6 +27,7 @@ function bridge(tasks: AgentTask[]): AgentBridge {
     ],
     approval: null, planApproval: null, agents: [], workflows: [], workflowRuns: [],
     triggers: [], fileTriggers: [], error: null, send: vi.fn(), createTask: vi.fn(),
+    editTask: vi.fn(), archiveTasks: vi.fn().mockImplementation(async (taskIds: string[]) => taskIds),
     runTask: vi.fn(), completeTask: vi.fn().mockResolvedValue([]), controlSession: vi.fn(), decideApproval: vi.fn(), decidePlanApproval: vi.fn(),
     createAgent: vi.fn(), createWorkflow: vi.fn(), updateWorkflow: vi.fn(),
     duplicateWorkflow: vi.fn(), setWorkflowEnabled: vi.fn(), archiveWorkflow: vi.fn(),
@@ -216,5 +217,50 @@ describe("KanbanBoard governance view", () => {
 
     expect(screen.queryByRole("dialog", { name: /complete linked task/i })).not.toBeInTheDocument();
     expect(testBridge.completeTask).not.toHaveBeenCalled();
+  });
+
+  it("searches tasks across titles and file paths", async () => {
+    const user = userEvent.setup();
+    render(<KanbanBoard bridge={bridge([
+      task({ id: "alpha", title: "Update authentication", filePath: "src/auth.ts", status: "backlog", agentId: null, sessionId: null }),
+      task({ id: "beta", title: "Write release notes", filePath: "docs/release.md", status: "backlog", agentId: null, sessionId: null }),
+    ])} />);
+
+    await user.type(screen.getByRole("textbox", { name: /search tasks/i }), "release.md");
+    expect(screen.getByText("Write release notes")).toBeInTheDocument();
+    expect(screen.queryByText("Update authentication")).not.toBeInTheDocument();
+  });
+
+  it("opens task details and sends an optimistic edit", async () => {
+    const user = userEvent.setup();
+    const existing = task({ status: "backlog", agentId: null, sessionId: null });
+    const testBridge = bridge([existing]);
+    render(<KanbanBoard bridge={testBridge} />);
+
+    await user.click(screen.getByRole("button", { name: /open details for governed task/i }));
+    const dialog = screen.getByRole("dialog", { name: /task details/i });
+    await user.clear(within(dialog).getByRole("textbox", { name: /task title/i }));
+    await user.type(within(dialog).getByRole("textbox", { name: /task title/i }), "Updated governed task");
+    await user.click(within(dialog).getByRole("button", { name: /save changes/i }));
+
+    expect(testBridge.editTask).toHaveBeenCalledWith(expect.objectContaining({
+      id: existing.id, title: "Updated governed task", version: existing.version,
+    }));
+  });
+
+  it("bulk archives completed tasks after confirmation", async () => {
+    const user = userEvent.setup();
+    const testBridge = bridge([
+      task({ id: "done-1", title: "First complete", status: "completed", agentId: null, sessionId: null }),
+      task({ id: "done-2", title: "Second complete", status: "completed", agentId: null, sessionId: null }),
+      task({ id: "open-1", title: "Still open", status: "backlog", agentId: null, sessionId: null }),
+    ]);
+    render(<KanbanBoard bridge={testBridge} />);
+
+    await user.click(screen.getByRole("button", { name: /archive completed/i }));
+    expect(screen.getByRole("dialog", { name: /archive 2 completed tasks/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^archive$/i }));
+
+    expect(testBridge.archiveTasks).toHaveBeenCalledWith(["done-1", "done-2"]);
   });
 });

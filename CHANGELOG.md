@@ -3,6 +3,24 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-09-02
+
+### Added
+
+- A task details workspace with editable title, instruction, target path, provider, source metadata, and chronological activity history.
+- Board-wide text search plus source and status filters for finding governed work quickly.
+- Recoverable task archival, including a confirmed bulk action for clearing completed cards without deleting their SQLite records or worklogs.
+
+### Safety and reliability
+
+- Uses optimistic task versions to reject stale edits instead of silently overwriting newer agent state.
+- Prevents editing or archiving tasks while they are active, blocked, or awaiting approval.
+- Records task edits and archival operations as durable audit-history events.
+
+### Verification
+
+- Expands automated coverage to 110 tests, including persistence, stale-version, archival-history, search, editing, and bulk-archive regressions.
+
 ## [0.10.3] - 2026-09-02
 
 ### Added
@@ -253,6 +271,7 @@ All notable Taskloom changes are documented here. This project follows
 - Tauri, React, TypeScript, Tailwind CSS, and Python JSONL desktop MVP.
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
+[0.11.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.11.0
 [0.10.3]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.3
 [0.10.2]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.2
 [0.10.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.1

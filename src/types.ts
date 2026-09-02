@@ -109,6 +109,7 @@ export interface AgentTask {
   version: number;
   createdAt?: string | null;
   updatedAt?: string | null;
+  archivedAt?: string | null;
   links: TaskLink[];
   worklogs: TaskWorklog[];
 }

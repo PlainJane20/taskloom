@@ -186,6 +186,7 @@ async def test_tasks_survive_engine_restart(tmp_path: Path) -> None:
         "version": 1,
         "createdAt": None,
         "updatedAt": None,
+        "archivedAt": None,
         "links": [],
         "worklogs": [],
     }
@@ -1123,3 +1124,69 @@ async def test_health_report_blocks_readiness_when_ollama_model_is_missing(
     model = next(check for check in report["checks"] if check["id"] == "model")
     assert model["status"] == "error"
     assert model["required"] is True
+
+
+@pytest.mark.asyncio
+async def test_edit_task_persists_and_records_history(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_task",
+        "payload": {"taskId": "editable", "title": "Before", "prompt": "Original", "filePath": "before.md"},
+    })
+
+    responses = await engine.handle({
+        "type": "edit_task",
+        "payload": {
+            "taskId": "editable", "title": "After", "prompt": "Revised",
+            "filePath": "after.md", "provider": "ollama", "expectedVersion": 1,
+        },
+    })
+
+    edited = responses[0]["payload"]["task"]
+    assert edited["title"] == "After"
+    assert edited["version"] == 2
+    assert edited["worklogs"][-1]["kind"] == "task_edited"
+    restarted = TaskloomEngine(tmp_path, llm=FakeLLM())
+    assert restarted.tasks["editable"].title == "After"
+
+
+@pytest.mark.asyncio
+async def test_edit_task_rejects_stale_version(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_task",
+        "payload": {"taskId": "conflict", "title": "Task", "prompt": "Work", "filePath": "task.md"},
+    })
+
+    with pytest.raises(ProtocolError) as caught:
+        await engine.handle({
+            "type": "edit_task",
+            "payload": {
+                "taskId": "conflict", "title": "Stale", "prompt": "Work",
+                "filePath": "task.md", "provider": "ollama", "expectedVersion": 0,
+            },
+        })
+
+    assert caught.value.code == "version_conflict"
+
+
+@pytest.mark.asyncio
+async def test_archive_tasks_hides_records_without_deleting_history(tmp_path: Path) -> None:
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    await engine.handle({
+        "type": "create_task",
+        "payload": {"taskId": "archived", "title": "Keep history", "prompt": "Work", "filePath": "task.md"},
+    })
+
+    responses = await engine.handle({"type": "archive_tasks", "payload": {"taskIds": ["archived"]}})
+
+    assert responses[0]["payload"]["taskIds"] == ["archived"]
+    assert "archived" not in engine.tasks
+    row = engine.state.connection.execute("SELECT archived_at FROM tasks WHERE id = ?", ("archived",)).fetchone()
+    assert row["archived_at"] is not None
+    kinds = [row["kind"] for row in engine.state.connection.execute(
+        "SELECT kind FROM task_worklogs WHERE task_id = ?", ("archived",),
+    ).fetchall()]
+    assert "task_archived" in kinds
+    restarted = TaskloomEngine(tmp_path, llm=FakeLLM())
+    assert "archived" not in restarted.tasks

@@ -63,6 +63,7 @@ class Task:
     version: int = 1
     created_at: str | None = None
     updated_at: str | None = None
+    archived_at: str | None = None
 
 
 @dataclass
@@ -335,7 +336,8 @@ class StateStore:
                 progress_total INTEGER NOT NULL DEFAULT 0,
                 version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                archived_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -600,6 +602,7 @@ class StateStore:
         self._ensure_column("tasks", "progress_total", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("tasks", "version", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("tasks", "created_at", "TEXT")
+        self._ensure_column("tasks", "archived_at", "TEXT")
         self._ensure_column(
             "provider_connections", "background_sync_enabled", "INTEGER NOT NULL DEFAULT 1",
         )
@@ -614,6 +617,12 @@ class StateStore:
         with self.connection:
             self.connection.execute(
                 "UPDATE tasks SET created_at = updated_at WHERE created_at IS NULL"
+            )
+            self.connection.execute(
+                """INSERT OR IGNORE INTO schema_migrations
+                   (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)""",
+                (11, "task-lifecycle-management", "taskloom-v0.11-task-lifecycle",
+                 datetime.now(timezone.utc).isoformat()),
             )
             self.connection.execute(
                 """INSERT OR IGNORE INTO schema_migrations
@@ -645,8 +654,8 @@ class StateStore:
             """SELECT id, title, prompt, status, file_path, provider, error, source,
                       governance_state, confidence_score, agent_id, session_id, branch_name,
                       parent_task_id, cluster_key, progress_current, progress_total, version,
-                      created_at, updated_at
-                 FROM tasks ORDER BY updated_at, rowid"""
+                      created_at, updated_at, archived_at
+                 FROM tasks WHERE archived_at IS NULL ORDER BY updated_at, rowid"""
         ).fetchall()
         return [
             Task(
@@ -658,6 +667,7 @@ class StateStore:
                 parent_task_id=row["parent_task_id"], cluster_key=row["cluster_key"],
                 progress_current=row["progress_current"], progress_total=row["progress_total"],
                 version=row["version"], created_at=row["created_at"], updated_at=row["updated_at"],
+                archived_at=row["archived_at"],
             )
             for row in rows
         ]
@@ -673,8 +683,8 @@ class StateStore:
                     (id, title, prompt, status, file_path, provider, error, source,
                      governance_state, confidence_score, agent_id, session_id, branch_name,
                      parent_task_id, cluster_key, progress_current, progress_total, version,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     created_at, updated_at, archived_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     prompt = excluded.prompt,
@@ -694,14 +704,15 @@ class StateStore:
                     progress_total = excluded.progress_total,
                     version = excluded.version,
                     created_at = excluded.created_at,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    archived_at = excluded.archived_at
                 """,
                 (
                     task.id, task.title, task.prompt, task.status, task.file_path, task.provider,
                     task.error, task.source, task.governance_state, task.confidence_score,
                     task.agent_id, task.session_id, task.branch_name, task.parent_task_id,
                     task.cluster_key, task.progress_current, task.progress_total, task.version,
-                    task.created_at, task.updated_at,
+                    task.created_at, task.updated_at, task.archived_at,
                 ),
             )
 
@@ -1584,6 +1595,64 @@ class TaskloomEngine:
         self.state.save_task(task)
         return task
 
+    def add_task_history(self, task: Task, kind: str, message: str) -> TaskWorklog:
+        worklog = TaskWorklog(
+            id=str(uuid.uuid4()), task_id=task.id, kind=kind, message=message,
+            agent_id=task.agent_id, session_id=task.session_id,
+        )
+        self.worklogs[worklog.id] = worklog
+        self.state.save_worklog(worklog)
+        return worklog
+
+    def edit_task(self, payload: dict[str, Any]) -> Task:
+        self._require(payload, "taskId", "title", "prompt", "expectedVersion")
+        task_id = str(payload["taskId"])
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise ProtocolError("task_not_found", f"Task '{task_id}' does not exist")
+        if task.status in {"active", "blocked", "needs_approval"}:
+            raise ProtocolError("task_busy", "Pause or finish this task before editing it.")
+        title = str(payload["title"]).strip()
+        prompt = str(payload["prompt"]).strip()
+        if not title or not prompt:
+            raise ProtocolError("invalid_task", "Task title and instruction are required.")
+        provider = str(payload.get("provider") or task.provider)
+        if provider not in {"ollama", "openai"}:
+            raise ProtocolError("unknown_provider", f"Unsupported provider: {provider}")
+        raw_path = payload.get("filePath", task.file_path)
+        file_path = str(raw_path).strip() if raw_path is not None else None
+        if file_path:
+            self.snapshots.resolve_path(file_path)
+        updated = self.update_task(
+            task_id, task.status, expected_version=int(payload["expectedVersion"]),
+            title=title, prompt=prompt, file_path=file_path or None, provider=provider,
+            error=None,
+        )
+        self.add_task_history(updated, "task_edited", "Task details updated.")
+        return updated
+
+    def archive_tasks(self, payload: dict[str, Any]) -> list[str]:
+        task_ids = payload.get("taskIds")
+        if not isinstance(task_ids, list) or not task_ids:
+            raise ProtocolError("invalid_task_ids", "Select at least one task to archive.")
+        normalized = list(dict.fromkeys(str(task_id) for task_id in task_ids))
+        tasks: list[Task] = []
+        for task_id in normalized:
+            task = self.tasks.get(task_id)
+            if task is None:
+                raise ProtocolError("task_not_found", f"Task '{task_id}' does not exist")
+            if task.status in {"active", "blocked", "needs_approval"}:
+                raise ProtocolError("task_busy", f"Task '{task.title}' is still in progress.")
+            tasks.append(task)
+        archived_at = datetime.now(timezone.utc).isoformat()
+        for task in tasks:
+            task.archived_at = archived_at
+            task.version += 1
+            self.add_task_history(task, "task_archived", "Task archived from the active board.")
+            self.state.save_task(task)
+            self.tasks.pop(task.id, None)
+        return normalized
+
     def serialize_task(self, task: Task) -> dict[str, Any]:
         return {
             "id": task.id, "title": task.title, "prompt": task.prompt, "status": task.status,
@@ -1594,6 +1663,7 @@ class TaskloomEngine:
             "parentTaskId": task.parent_task_id, "clusterKey": task.cluster_key,
             "progressCurrent": task.progress_current, "progressTotal": task.progress_total,
             "version": task.version, "createdAt": task.created_at, "updatedAt": task.updated_at,
+            "archivedAt": task.archived_at,
             "links": self.state.load_task_links(task.id),
             "worklogs": [
                 self.serialize_worklog(worklog) for worklog in self.worklogs.values()
@@ -2947,6 +3017,18 @@ class TaskloomEngine:
         if kind in {"list_tasks", "list_state"}:
             response_type = "task_list" if kind == "list_tasks" else "state_snapshot"
             return [self._response(request_id, response_type, self.state_payload())]
+        if kind == "edit_task":
+            task = self.edit_task(payload)
+            return [
+                self._response(request_id, "task_edited", {"task": self.serialize_task(task)}),
+                {"type": "state_snapshot", "payload": self.state_payload()},
+            ]
+        if kind == "archive_tasks":
+            task_ids = self.archive_tasks(payload)
+            return [
+                self._response(request_id, "tasks_archived", {"taskIds": task_ids}),
+                {"type": "state_snapshot", "payload": self.state_payload()},
+            ]
         if kind == "create_provider_connection":
             self._require(payload, "provider", "repository")
             provider = str(payload["provider"]).lower()

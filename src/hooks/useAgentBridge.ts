@@ -28,6 +28,8 @@ export interface AgentBridge {
   error: string | null;
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
+  editTask: (input: Pick<AgentTask, "id" | "title" | "prompt" | "filePath" | "provider" | "version">) => Promise<AgentTask>;
+  archiveTasks: (taskIds: string[]) => Promise<string[]>;
   runTask: (taskId: string) => Promise<void>;
   completeTask: (taskId: string) => Promise<SyncEvent[]>;
   controlSession: (sessionId: string, action: "pause" | "resume" | "kill") => Promise<void>;
@@ -260,6 +262,28 @@ export function useAgentBridge(settings: AppSettings = DEFAULT_SETTINGS): AgentB
     return response.payload?.task as unknown as AgentTask;
   }, [send]);
 
+  const editTask = useCallback(async (
+    input: Pick<AgentTask, "id" | "title" | "prompt" | "filePath" | "provider" | "version">,
+  ) => {
+    const response = await send({
+      type: "edit_task",
+      payload: {
+        taskId: input.id,
+        title: input.title,
+        prompt: input.prompt,
+        filePath: input.filePath,
+        provider: input.provider,
+        expectedVersion: input.version,
+      },
+    });
+    return response.payload?.task as unknown as AgentTask;
+  }, [send]);
+
+  const archiveTasks = useCallback(async (taskIds: string[]) => {
+    const response = await send({ type: "archive_tasks", payload: { taskIds } });
+    return (response.payload?.taskIds as unknown as string[] | undefined) ?? [];
+  }, [send]);
+
   const runTask = useCallback(async (taskId: string) => {
     // The engine persists `active` before awaiting the model, but the JSON-lines
     // response arrives only after generation. Reflect that authoritative state
@@ -456,7 +480,7 @@ export function useAgentBridge(settings: AppSettings = DEFAULT_SETTINGS): AgentB
     status, tasks, sessions, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
     providerConnections, syncEvents, externalIssueLinks, health,
     error, send,
-    createTask, runTask, completeTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
+    createTask, editTask, archiveTasks, runTask, completeTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
     runWorkflow, retryWorkflow, cancelWorkflow, createTrigger, setTriggerEnabled,
     runTriggerNow, deleteTrigger, createFileTrigger, setFileTriggerEnabled, deleteFileTrigger,
