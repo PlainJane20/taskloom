@@ -92,6 +92,7 @@ function TaskCard({ task, run, complete, disabled, collision, showTrace }: {
 
 export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
   const [showForm, setShowForm] = useState(false);
+  const [pendingCompletion, setPendingCompletion] = useState<AgentTask | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [completionNotice, setCompletionNotice] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
@@ -127,8 +128,7 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
   }
 
   async function complete(task: AgentTask) {
-    const issue = task.links.find((link) => link.kind === "issue")?.label || "the linked issue";
-    if (!window.confirm(`Mark this task complete and close ${issue}?`)) return;
+    setPendingCompletion(null);
     setBusy(true); setFormError(null); setCompletionNotice(null);
     try {
       const events = await bridge.completeTask(task.id);
@@ -191,7 +191,7 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
                 const items = tasks.filter((task) => column.statuses.includes(task.status));
                 return <div key={column.title} className="min-h-64 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
                   <div className="mb-3 flex items-center gap-2 px-1"><span className={`h-2 w-2 rounded-full ${column.accent}`} /><h4 className="text-xs font-semibold">{column.title}</h4><span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{items.length}</span></div>
-                  <div className="space-y-3">{items.map((task) => <TaskCard key={task.id} task={task} run={(id) => void run(id)} complete={(item) => void complete(item)} disabled={busy} collision={collisions.has(task.id)} showTrace={setTrace} />)}</div>
+                  <div className="space-y-3">{items.map((task) => <TaskCard key={task.id} task={task} run={(id) => void run(id)} complete={setPendingCompletion} disabled={busy} collision={collisions.has(task.id)} showTrace={setTrace} />)}</div>
                 </div>;
               })}
             </div>
@@ -208,6 +208,24 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
           <label className="block text-sm">Provider<select name="provider" defaultValue="ollama" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"><option value="ollama">Ollama (local)</option><option value="openai">OpenAI</option></select></label>
           <button disabled={busy} className="w-full rounded-lg bg-cyan-400 py-2 font-bold text-slate-950 disabled:opacity-50">Add to backlog</button>
         </form>
+      </div>}
+      {pendingCompletion && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/85 p-5" role="dialog" aria-modal="true" aria-labelledby="complete-task-title">
+        <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+          <div className="flex items-start gap-3">
+            <span className="rounded-xl bg-emerald-950 p-2 text-emerald-300"><CheckCircle2 size={24} /></span>
+            <div>
+              <h2 id="complete-task-title" className="text-lg font-bold text-slate-100">Complete linked task?</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Mark <strong className="text-slate-200">{pendingCompletion.title}</strong> complete and close <strong className="text-cyan-300">{pendingCompletion.links.find((link) => link.kind === "issue")?.label || "the linked issue"}</strong>?
+              </p>
+            </div>
+          </div>
+          <p className="mt-4 rounded-lg border border-amber-900/70 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">Taskloom will record the outbound synchronization result. Provider conflicts remain visible and can be retried.</p>
+          <div className="mt-6 flex justify-end gap-3">
+            <button type="button" disabled={busy} onClick={() => setPendingCompletion(null)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">Cancel</button>
+            <button type="button" disabled={busy} onClick={() => void complete(pendingCompletion)} className="flex items-center gap-2 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-emerald-300 disabled:opacity-40"><CheckCircle2 size={17} /> Mark complete</button>
+          </div>
+        </div>
       </div>}
       {trace && <TraceModal trace={trace} onClose={() => setTrace(null)} />}
       {bridge.approval && <ApprovalModal request={bridge.approval} onDecision={decide} busy={busy} />}

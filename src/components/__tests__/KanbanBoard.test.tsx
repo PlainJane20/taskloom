@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentBridge } from "../../hooks/useAgentBridge";
@@ -104,14 +104,14 @@ describe("KanbanBoard governance view", () => {
       action: "close_issue", status: "completed", message: "Closed PlainJane20/taskloom#1",
       taskId: imported.id, externalId: "1", attemptCount: 1, createdAt: "now",
     }]);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<KanbanBoard bridge={testBridge} />);
 
     await user.click(screen.getByRole("button", { name: /mark taskloom two-way sync test complete/i }));
+    const dialog = screen.getByRole("dialog", { name: /complete linked task/i });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText("PlainJane20/taskloom#1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^mark complete$/i }));
 
-    expect(window.confirm).toHaveBeenCalledWith(
-      "Mark this task complete and close PlainJane20/taskloom#1?",
-    );
     expect(testBridge.completeTask).toHaveBeenCalledWith(imported.id);
     expect(await screen.findByText("Closed PlainJane20/taskloom#1")).toBeInTheDocument();
   });
@@ -132,13 +132,33 @@ describe("KanbanBoard governance view", () => {
       action: "close_issue", status: "conflict", message: "acme/app#2 changed on GitHub",
       taskId: imported.id, externalId: "2", attemptCount: 1, createdAt: "now",
     }]);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<KanbanBoard bridge={testBridge} />);
 
     await user.click(screen.getByRole("button", { name: /mark conflicted issue complete/i }));
+    await user.click(screen.getByRole("button", { name: /^mark complete$/i }));
 
     expect(await screen.findByText(
       "Task completed, but provider sync needs attention: acme/app#2 changed on GitHub",
     )).toBeInTheDocument();
+  });
+
+  it("cancels imported issue completion without calling the bridge", async () => {
+    const user = userEvent.setup();
+    const imported = task({
+      title: "Imported issue", status: "backlog", source: "provider", filePath: null,
+      agentId: null, sessionId: null,
+      links: [{
+        id: "issue-3", kind: "issue", provider: "github", label: "acme/app#3",
+        url: "https://github.com/acme/app/issues/3", createdAt: "now",
+      }],
+    });
+    const testBridge = bridge([imported]);
+    render(<KanbanBoard bridge={testBridge} />);
+
+    await user.click(screen.getByRole("button", { name: /mark imported issue complete/i }));
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+    expect(screen.queryByRole("dialog", { name: /complete linked task/i })).not.toBeInTheDocument();
+    expect(testBridge.completeTask).not.toHaveBeenCalled();
   });
 });

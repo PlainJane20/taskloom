@@ -3,6 +3,19 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] - 2026-09-01
+
+### Fixed
+
+- Replaces the desktop WebView's unreliable native confirmation prompt with a visible, accessible Taskloom confirmation modal.
+- Makes imported Issue completion provide immediate visual feedback when the green completion control is selected.
+- Adds an explicit cancel path that never mutates the Taskloom card or linked GitHub Issue.
+
+### Verification
+
+- Expands automated coverage to 87 tests: 66 Python/MCP and 21 React interactions.
+- Adds regression coverage for opening, confirming, and cancelling the completion modal.
+
 ## [0.7.1] - 2026-09-01
 
 ### Added
@@ -143,6 +156,7 @@ All notable Taskloom changes are documented here. This project follows
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
 [0.4.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0
+[0.7.2]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.2
 [0.7.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.1
 [0.7.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.0
 [0.6.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.6.0

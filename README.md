@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.7.1-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.7.1)
+  [![Release](https://img.shields.io/badge/release-v0.7.2-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.7.2)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.7.1 is a working governed multi-agent automation platform with bidirectional GitHub Issues synchronization. Open issues import into the board idempotently, and a guarded **Mark complete** action closes linked issues with explicit confirmation and visible success, conflict, or retry feedback. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 86 automated tests.
+> **Project status:** Taskloom v0.7.2 is a working governed multi-agent automation platform with bidirectional GitHub Issues synchronization. Open issues import into the board idempotently, and a guarded **Mark complete** action closes linked issues through a reliable in-app confirmation modal with visible success, conflict, or retry feedback. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 87 automated tests.
 
 ## Why Taskloom
 
