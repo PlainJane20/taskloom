@@ -15,6 +15,7 @@ describe("OnboardingModal", () => {
     const user = userEvent.setup();
     render(<OnboardingModal settings={DEFAULT_SETTINGS} health={health} onComplete={vi.fn()} onCustomize={vi.fn()} />);
 
+    expect(screen.getByRole("img", { name: /taskloom logo/i })).toBeInTheDocument();
     expect(screen.getByText(/local workspace/i)).toBeInTheDocument();
     expect(screen.getByText(/human approval/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /check my setup/i }));

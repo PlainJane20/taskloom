@@ -3,6 +3,13 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.2] - 2026-09-02
+
+### Fixed
+
+- Replaces the generic first-run sparkle with the official Taskloom application icon so onboarding, the app header, Finder, and the Dock use consistent branding.
+- Adds regression coverage for the branded onboarding experience.
+
 ## [0.10.1] - 2026-09-02
 
 ### Fixed
@@ -236,6 +243,7 @@ All notable Taskloom changes are documented here. This project follows
 - Tauri, React, TypeScript, Tailwind CSS, and Python JSONL desktop MVP.
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
+[0.10.2]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.2
 [0.10.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.1
 [0.10.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.0
 [0.9.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.9.0

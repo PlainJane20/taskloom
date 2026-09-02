@@ -1,5 +1,6 @@
-import { ArrowRight, Bot, CheckCircle2, FolderLock, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, Bot, CheckCircle2, FolderLock, ShieldCheck } from "lucide-react";
 import { useState } from "react";
+import taskloomIcon from "../../src-tauri/icons/128x128.png";
 import type { AppSettings, HealthReport } from "../types";
 
 export function OnboardingModal({
@@ -14,7 +15,7 @@ export function OnboardingModal({
   return <div className="fixed inset-0 z-[100] grid place-items-center overflow-y-auto bg-slate-950/95 p-5" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
     <div className="w-full max-w-3xl rounded-3xl border border-slate-700 bg-slate-900 p-7 shadow-2xl shadow-cyan-950/30">
       {step === 0 ? <>
-        <span className="inline-flex rounded-2xl bg-cyan-950 p-3 text-cyan-300"><Sparkles size={28} /></span>
+        <img src={taskloomIcon} alt="Taskloom logo" className="h-16 w-16 rounded-2xl shadow-lg shadow-cyan-950/50" />
         <h2 id="onboarding-title" className="mt-5 text-3xl font-bold">Welcome to Taskloom</h2>
         <p className="mt-3 max-w-2xl text-slate-400">Coordinate local AI agents visually while every sensitive file change remains reviewable, reversible, and under your control.</p>
         <div className="mt-7 grid gap-4 md:grid-cols-3">
