@@ -3,6 +3,12 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] - 2026-09-02
+
+### Fixed
+
+- Adds reproducible macOS packaging with complete resource sealing, strict signature verification, clean ZIP archives, and 4 KiB signing pages required by macOS 26.5+.
+
 ## [0.10.0] - 2026-09-02
 
 ### Added
@@ -230,6 +236,7 @@ All notable Taskloom changes are documented here. This project follows
 - Tauri, React, TypeScript, Tailwind CSS, and Python JSONL desktop MVP.
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
+[0.10.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.1
 [0.10.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.0
 [0.9.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.9.0
 [0.8.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.8.1

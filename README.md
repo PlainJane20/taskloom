@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.10.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.10.0)
+  [![Release](https://img.shields.io/badge/release-v0.10.1-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.10.1)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.10.0 is a working governed multi-agent automation platform with guided onboarding, in-app local configuration, environment health checks, durable bidirectional GitHub Issues synchronization, and inspectable execution history. Every captured command and file mutation remains reviewable and workspace-confined. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, recoverable snapshots, and local readiness checks are covered by 103 automated tests.
+> **Project status:** Taskloom v0.10.1 is a working governed multi-agent automation platform with guided onboarding, in-app local configuration, environment health checks, durable bidirectional GitHub Issues synchronization, and inspectable execution history. Every captured command and file mutation remains reviewable and workspace-confined. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, recoverable snapshots, and local readiness checks are covered by 103 automated tests.
 
 ## Why Taskloom
 
@@ -384,6 +384,17 @@ On macOS, the application bundle is written to:
 ```text
 src-tauri/target/release/bundle/macos/Taskloom.app
 ```
+
+Create and verify a distributable macOS ZIP with:
+
+```bash
+npm run package:mac
+```
+
+The packaging script seals the complete app bundle after Tauri copies its
+resources, removes build-host metadata, uses 4 KiB signing pages for macOS
+26.5+ compatibility, performs strict code-signature verification, and writes
+`/private/tmp/Taskloom-v<version>-macOS-arm64.zip` without Finder metadata.
 
 Local ad-hoc builds may require approval in **System Settings → Privacy & Security**. Public releases should use an Apple Developer ID and notarization. The MVP package requires Python 3 and Ollama on the destination machine; a compiled sidecar is planned.
 

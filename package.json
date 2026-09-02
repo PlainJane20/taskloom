@@ -1,13 +1,14 @@
 {
   "name": "taskloom",
   "private": true,
-  "version": "0.10.0",
+  "version": "0.10.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "package:mac": "sh scripts/package-macos.sh",
     "tauri": "tauri"
   },
   "dependencies": {
