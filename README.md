@@ -422,6 +422,7 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [ ] Linear and Jira provider adapters
 - [ ] Provider webhook signature verification, delivery ledger, and reconciliation queue
 - [ ] Parallel branches with configurable resource budgets
+- [ ] Bounded recursive subagent delegation (agent-level depth/count ceilings, read-only synchronous children, parent retains write ownership)
 - [ ] Snapshot browser and one-click restoration
 - [ ] Compiled Python sidecar for zero-dependency installation
 - [ ] Signed and notarized macOS releases
