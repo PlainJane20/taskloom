@@ -27,6 +27,7 @@ export interface AgentBridge {
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
   createTask: (input: Pick<AgentTask, "title" | "prompt" | "filePath" | "provider">) => Promise<AgentTask>;
   runTask: (taskId: string) => Promise<void>;
+  completeTask: (taskId: string) => Promise<SyncEvent[]>;
   controlSession: (sessionId: string, action: "pause" | "resume" | "kill") => Promise<void>;
   decideApproval: (requestId: string, decision: "approve" | "reject") => Promise<void>;
   decidePlanApproval: (requestId: string, decision: "approve" | "reject") => Promise<void>;
@@ -261,6 +262,12 @@ export function useAgentBridge(): AgentBridge {
     }
   }, [send]);
 
+  const completeTask = useCallback(async (taskId: string) => {
+    const response = await send({ type: "update_task", payload: { taskId, status: "completed" } });
+    await send({ type: "list_state", payload: {} });
+    return (response.payload?.events as unknown as SyncEvent[] | undefined) ?? [];
+  }, [send]);
+
   const controlSession = useCallback(async (
     sessionId: string, action: "pause" | "resume" | "kill",
   ) => {
@@ -412,7 +419,7 @@ export function useAgentBridge(): AgentBridge {
     status, tasks, sessions, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
     providerConnections, syncEvents, externalIssueLinks,
     error, send,
-    createTask, runTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
+    createTask, runTask, completeTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
     runWorkflow, retryWorkflow, cancelWorkflow, createTrigger, setTriggerEnabled,
     runTriggerNow, deleteTrigger, createFileTrigger, setFileTriggerEnabled, deleteFileTrigger,

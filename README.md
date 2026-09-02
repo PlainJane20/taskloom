@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.7.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.7.0)
+  [![Release](https://img.shields.io/badge/release-v0.7.1-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.7.1)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.7.0 is a working governed multi-agent automation platform with bidirectional GitHub Issues synchronization. Open issues import into the board idempotently, completed linked cards close their issues, remote edits become visible conflicts, and transient failures enter a durable retry queue. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 84 automated tests.
+> **Project status:** Taskloom v0.7.1 is a working governed multi-agent automation platform with bidirectional GitHub Issues synchronization. Open issues import into the board idempotently, and a guarded **Mark complete** action closes linked issues with explicit confirmation and visible success, conflict, or retry feedback. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 86 automated tests.
 
 ## Why Taskloom
 
@@ -88,7 +88,7 @@ Goal / Schedule / File change → Workflow → Planner → Builder → Validator
 | Resilient output handling | Removes accidental outer Markdown fences without altering embedded content |
 | Desktop distribution | Native Tauri shell with macOS application packaging and branded assets |
 | Automated quality gates | Python, React, TypeScript, and Rust checks on every push and pull request |
-| Bidirectional GitHub Issues | Idempotent imports, linked cards, guarded issue closure, conflict detection, and durable retries |
+| Bidirectional GitHub Issues | Idempotent imports, linked cards, confirmed one-click completion, guarded issue closure, conflict detection, and durable retries |
 | Credential isolation | Uses the authenticated official `gh` client; Taskloom never copies access tokens into SQLite |
 
 ## Architecture

@@ -3,6 +3,24 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-09-01
+
+### Added
+
+- A guarded **Mark complete** control on imported GitHub Issue cards.
+- Explicit confirmation naming the linked Issue before Taskloom performs the outbound mutation.
+- Immediate board feedback for successful closure, remote-edit conflicts, and queued or failed provider operations.
+
+### Changed
+
+- Task-update IPC responses now include the outbound sync events produced by the status transition.
+- Imported Issue completion uses the existing conflict detection, durable retry queue, and sync audit trail.
+
+### Verification
+
+- Expands automated coverage to 86 tests: 66 Python/MCP and 20 React interactions.
+- Adds UI regression coverage for confirmed Issue closure and visible conflict feedback.
+
 ## [0.7.0] - 2026-09-01
 
 ### Added
@@ -125,6 +143,7 @@ All notable Taskloom changes are documented here. This project follows
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
 [0.4.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0
+[0.7.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.1
 [0.7.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.0
 [0.6.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.6.0
 [0.5.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.5.0

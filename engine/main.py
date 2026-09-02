@@ -2820,9 +2820,12 @@ class TaskloomEngine:
         if kind == "update_task":
             self._require(payload, "taskId", "status")
             task = self.update_task(str(payload["taskId"]), str(payload["status"]))
-            await self.sync_completed_task_outbound(task)
+            events = await self.sync_completed_task_outbound(task)
             return [self._response(
-                request_id, "task_updated", {"task": self.serialize_task(task)},
+                request_id, "task_updated", {
+                    "task": self.serialize_task(task),
+                    "events": [self.serialize_sync_event(event) for event in events],
+                },
             ), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "run_task":
             self._require(payload, "taskId")

@@ -252,7 +252,7 @@ async def test_completed_imported_task_closes_linked_github_issue(tmp_path: Path
     provider = FakeGitHubProvider(issues=[_outbound_issue()])
     engine, task_id = await _engine_with_imported_issue(tmp_path, provider)
 
-    await engine.handle({
+    response = await engine.handle({
         "type": "update_task", "payload": {"taskId": task_id, "status": "completed"},
     })
 
@@ -262,6 +262,7 @@ async def test_completed_imported_task_closes_linked_github_issue(tmp_path: Path
     event = engine.sync_events[0]
     assert event.direction == "outbound"
     assert event.status == "completed"
+    assert response[0]["payload"]["events"][0]["message"] == "Closed acme/app#18"
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ function bridge(tasks: AgentTask[]): AgentBridge {
     ],
     approval: null, planApproval: null, agents: [], workflows: [], workflowRuns: [],
     triggers: [], fileTriggers: [], error: null, send: vi.fn(), createTask: vi.fn(),
-    runTask: vi.fn(), controlSession: vi.fn(), decideApproval: vi.fn(), decidePlanApproval: vi.fn(),
+    runTask: vi.fn(), completeTask: vi.fn().mockResolvedValue([]), controlSession: vi.fn(), decideApproval: vi.fn(), decidePlanApproval: vi.fn(),
     createAgent: vi.fn(), createWorkflow: vi.fn(), updateWorkflow: vi.fn(),
     duplicateWorkflow: vi.fn(), setWorkflowEnabled: vi.fn(), archiveWorkflow: vi.fn(),
     runWorkflow: vi.fn(), retryWorkflow: vi.fn(), cancelWorkflow: vi.fn(),
@@ -85,5 +85,60 @@ describe("KanbanBoard governance view", () => {
     expect(testBridge.controlSession).toHaveBeenCalledWith("session-a", "pause");
     await user.click(screen.getByRole("button", { name: /stop session-a/i }));
     expect(testBridge.controlSession).toHaveBeenCalledWith("session-a", "kill");
+  });
+
+  it("confirms and completes an imported issue through the governed outbound path", async () => {
+    const user = userEvent.setup();
+    const imported = task({
+      title: "Taskloom two-way sync test", status: "backlog", source: "provider",
+      filePath: null, agentId: null, sessionId: null,
+      links: [{
+        id: "issue-1", kind: "issue", provider: "github",
+        label: "PlainJane20/taskloom#1", url: "https://github.com/PlainJane20/taskloom/issues/1",
+        createdAt: "now",
+      }],
+    });
+    const testBridge = bridge([imported]);
+    testBridge.completeTask = vi.fn().mockResolvedValue([{
+      id: "sync-1", connectionId: "github-main", direction: "outbound",
+      action: "close_issue", status: "completed", message: "Closed PlainJane20/taskloom#1",
+      taskId: imported.id, externalId: "1", attemptCount: 1, createdAt: "now",
+    }]);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<KanbanBoard bridge={testBridge} />);
+
+    await user.click(screen.getByRole("button", { name: /mark taskloom two-way sync test complete/i }));
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      "Mark this task complete and close PlainJane20/taskloom#1?",
+    );
+    expect(testBridge.completeTask).toHaveBeenCalledWith(imported.id);
+    expect(await screen.findByText("Closed PlainJane20/taskloom#1")).toBeInTheDocument();
+  });
+
+  it("keeps provider conflicts visible after a task is completed", async () => {
+    const user = userEvent.setup();
+    const imported = task({
+      title: "Conflicted issue", status: "backlog", source: "provider", filePath: null,
+      agentId: null, sessionId: null,
+      links: [{
+        id: "issue-2", kind: "issue", provider: "github", label: "acme/app#2",
+        url: "https://github.com/acme/app/issues/2", createdAt: "now",
+      }],
+    });
+    const testBridge = bridge([imported]);
+    testBridge.completeTask = vi.fn().mockResolvedValue([{
+      id: "sync-2", connectionId: "github-main", direction: "outbound",
+      action: "close_issue", status: "conflict", message: "acme/app#2 changed on GitHub",
+      taskId: imported.id, externalId: "2", attemptCount: 1, createdAt: "now",
+    }]);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<KanbanBoard bridge={testBridge} />);
+
+    await user.click(screen.getByRole("button", { name: /mark conflicted issue complete/i }));
+
+    expect(await screen.findByText(
+      "Task completed, but provider sync needs attention: acme/app#2 changed on GitHub",
+    )).toBeInTheDocument();
   });
 });

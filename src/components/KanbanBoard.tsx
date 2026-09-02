@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { AlertTriangle, CirclePlay, ExternalLink, GitCommit, Pause, Play, Plus, ShieldAlert, Square, Terminal, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CirclePlay, ExternalLink, GitCommit, Pause, Play, Plus, ShieldAlert, Square, Terminal, X } from "lucide-react";
 import type { AgentBridge } from "../hooks/useAgentBridge";
 import type { AgentSession, AgentTask, ExecutionTrace, TaskStatus } from "../types";
 import { ApprovalModal, type ApprovalDecisionPayload } from "./ApprovalModal";
@@ -51,17 +51,22 @@ function statusStyle(status?: AgentSession["status"]): string {
   return "border-slate-700 bg-slate-800 text-slate-400";
 }
 
-function TaskCard({ task, run, disabled, collision, showTrace }: {
-  task: AgentTask; run: (id: string) => void; disabled: boolean; collision: boolean;
+function TaskCard({ task, run, complete, disabled, collision, showTrace }: {
+  task: AgentTask; run: (id: string) => void; complete: (task: AgentTask) => void;
+  disabled: boolean; collision: boolean;
   showTrace: (trace: ExecutionTrace) => void;
 }) {
   const trace = [...(task.worklogs || [])].reverse().find((entry) => entry.trace)?.trace;
   const progress = task.progressTotal > 1 ? `${task.progressCurrent} of ${task.progressTotal} subtasks done` : null;
+  const importedIssue = task.source === "provider" && task.links.some((link) => link.kind === "issue");
   return (
     <article className={`rounded-xl border bg-slate-800/80 p-4 shadow-sm ${collision ? "border-rose-700" : task.status === "draft" ? "border-violet-800" : "border-slate-700"}`}>
       <div className="flex items-start justify-between gap-3">
         <h3 className="font-semibold text-slate-100">{task.title}</h3>
-        {task.status === "backlog" && task.filePath && <button aria-label={`Run ${task.title}`} disabled={disabled} onClick={() => run(task.id)} className="rounded-md p-1 text-cyan-300 hover:bg-slate-700 disabled:opacity-40"><CirclePlay size={19} /></button>}
+        <div className="flex shrink-0 gap-1">
+          {task.status === "backlog" && task.filePath && <button aria-label={`Run ${task.title}`} disabled={disabled} onClick={() => run(task.id)} className="rounded-md p-1 text-cyan-300 hover:bg-slate-700 disabled:opacity-40"><CirclePlay size={19} /></button>}
+          {task.status === "backlog" && importedIssue && <button aria-label={`Mark ${task.title} complete`} title="Mark complete and close the linked issue" disabled={disabled} onClick={() => complete(task)} className="rounded-md p-1 text-emerald-300 hover:bg-slate-700 disabled:opacity-40"><CheckCircle2 size={19} /></button>}
+        </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
         {task.agentId && <span className="rounded bg-slate-700 px-2 py-1 text-slate-300">{task.agentId}</span>}
@@ -89,6 +94,7 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
   const [showForm, setShowForm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [completionNotice, setCompletionNotice] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
   const [groupBy, setGroupBy] = useState<GroupBy>("session");
   const [trace, setTrace] = useState<ExecutionTrace | null>(null);
   const collisions = useMemo(() => collisionTaskIds(bridge.tasks), [bridge.tasks]);
@@ -120,6 +126,24 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
     finally { setBusy(false); }
   }
 
+  async function complete(task: AgentTask) {
+    const issue = task.links.find((link) => link.kind === "issue")?.label || "the linked issue";
+    if (!window.confirm(`Mark this task complete and close ${issue}?`)) return;
+    setBusy(true); setFormError(null); setCompletionNotice(null);
+    try {
+      const events = await bridge.completeTask(task.id);
+      const problem = events.find((event) => event.status !== "completed");
+      if (problem) {
+        setCompletionNotice({ tone: "warning", message: `Task completed, but provider sync needs attention: ${problem.message}` });
+      } else if (events.length > 0) {
+        setCompletionNotice({ tone: "success", message: events.map((event) => event.message).join(" · ") });
+      } else {
+        setCompletionNotice({ tone: "success", message: "Task marked complete." });
+      }
+    } catch (cause) { setFormError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }
+
   async function decide(message: ApprovalDecisionPayload) {
     setBusy(true);
     try { await bridge.decideApproval(message.payload.requestId, message.payload.decision); }
@@ -144,6 +168,7 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
         </div>
       </div>
       {formError && <p role="alert" className="mb-4 rounded-lg border border-rose-900 bg-rose-950/40 px-4 py-2 text-sm text-rose-300">{formError}</p>}
+      {completionNotice && <p role="status" className={`mb-4 rounded-lg border px-4 py-2 text-sm ${completionNotice.tone === "success" ? "border-emerald-900 bg-emerald-950/40 text-emerald-300" : "border-amber-900 bg-amber-950/40 text-amber-300"}`}>{completionNotice.message}</p>}
       <div className="space-y-6">
         {lanes.map(([key, tasks]) => {
           const session = groupBy === "session" ? bridge.sessions.find((item) => item.id === key) : undefined;
@@ -166,7 +191,7 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
                 const items = tasks.filter((task) => column.statuses.includes(task.status));
                 return <div key={column.title} className="min-h-64 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
                   <div className="mb-3 flex items-center gap-2 px-1"><span className={`h-2 w-2 rounded-full ${column.accent}`} /><h4 className="text-xs font-semibold">{column.title}</h4><span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{items.length}</span></div>
-                  <div className="space-y-3">{items.map((task) => <TaskCard key={task.id} task={task} run={(id) => void run(id)} disabled={busy} collision={collisions.has(task.id)} showTrace={setTrace} />)}</div>
+                  <div className="space-y-3">{items.map((task) => <TaskCard key={task.id} task={task} run={(id) => void run(id)} complete={(item) => void complete(item)} disabled={busy} collision={collisions.has(task.id)} showTrace={setTrace} />)}</div>
                 </div>;
               })}
             </div>
