@@ -422,7 +422,7 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [ ] Linear and Jira provider adapters
 - [ ] Provider webhook signature verification, delivery ledger, and reconciliation queue
 - [ ] Parallel branches with configurable resource budgets
-- [ ] Bounded recursive subagent delegation (agent-level depth/count ceilings, read-only synchronous children, parent retains write ownership)
+- [ ] Bounded recursive subagent delegation (agent-level depth/count ceilings, read-only synchronous children, parent retains write ownership) — the *idea* of depth-bounded delegation is inspired by [Livery](https://github.com/sohailmamdani/livery)'s subagent model; see [issue #3](https://github.com/PlainJane20/taskloom/issues/3) for Taskloom's own independent design (no code borrowed)
 - [ ] Snapshot browser and one-click restoration
 - [ ] Compiled Python sidecar for zero-dependency installation
 - [ ] Signed and notarized macOS releases
