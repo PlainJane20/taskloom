@@ -72,11 +72,33 @@ describe("KanbanBoard governance view", () => {
     })])} />);
 
     await user.click(screen.getByRole("button", { name: /view execution trace/i }));
-    expect(screen.getByRole("dialog", { name: /execution trace/i })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /execution history/i })).toBeInTheDocument();
     expect(screen.getByText("npm test")).toBeInTheDocument();
     expect(screen.getByText("12 tests passed")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /close execution trace/i }));
+    await user.click(screen.getByRole("button", { name: /close execution history/i }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("navigates every execution trace attached to a task", async () => {
+    const user = userEvent.setup();
+    render(<KanbanBoard bridge={bridge([task({
+      worklogs: [
+        {
+          id: "log-1", taskId: "task-1", message: "Compiled", kind: "command", createdAt: "first",
+          traceId: "trace-1", trace: { id: "trace-1", taskId: "task-1", commandExecuted: "npm run build", stdout: "build passed", stderr: "", exitCode: 0, truncated: false },
+        },
+        {
+          id: "log-2", taskId: "task-1", message: "Tested", kind: "command", createdAt: "second",
+          traceId: "trace-2", trace: { id: "trace-2", taskId: "task-1", commandExecuted: "npm test", stdout: "tests passed", stderr: "", exitCode: 0, truncated: false },
+        },
+      ],
+    })])} />);
+
+    await user.click(screen.getByRole("button", { name: /view 2 execution traces/i }));
+    expect(screen.getByText("npm test")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /previous execution trace/i }));
+    expect(screen.getByText("npm run build")).toBeInTheDocument();
+    expect(screen.getByText("Compiled")).toBeInTheDocument();
   });
 
   it("sends cooperative pause and stop controls only for capable sessions", async () => {
@@ -87,7 +109,20 @@ describe("KanbanBoard governance view", () => {
     await user.click(screen.getByRole("button", { name: /pause session-a/i }));
     expect(testBridge.controlSession).toHaveBeenCalledWith("session-a", "pause");
     await user.click(screen.getByRole("button", { name: /stop session-a/i }));
+    expect(screen.getByRole("dialog", { name: /stop this agent session/i })).toBeInTheDocument();
+    expect(testBridge.controlSession).not.toHaveBeenCalledWith("session-a", "kill");
+    await user.click(screen.getByRole("button", { name: /^stop agent$/i }));
     expect(testBridge.controlSession).toHaveBeenCalledWith("session-a", "kill");
+  });
+
+  it("keeps task-level controls available outside session swimlanes", async () => {
+    const user = userEvent.setup();
+    const testBridge = bridge([task({})]);
+    render(<KanbanBoard bridge={testBridge} />);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: /group task swimlanes/i }), "none");
+    await user.click(screen.getByRole("button", { name: /pause agent for governed task/i }));
+    expect(testBridge.controlSession).toHaveBeenCalledWith("session-a", "pause");
   });
 
   it("confirms and completes an imported issue through the governed outbound path", async () => {

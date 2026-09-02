@@ -2280,7 +2280,20 @@ class TaskloomEngine:
             raise ProtocolError(
                 "control_not_supported", f"Session '{session_id}' did not advertise {action} support",
             )
-        session.status = {"pause": "idle", "resume": "active", "kill": "completed"}[action]
+        # Repeated requests are safe, but terminal sessions cannot be restarted and
+        # resume is meaningful only after a cooperative pause has been observed.
+        target_status = {"pause": "idle", "resume": "active", "kill": "completed"}[action]
+        if session.status == target_status:
+            return session
+        if session.status == "completed":
+            raise ProtocolError(
+                "invalid_control_transition", f"Completed session '{session_id}' cannot {action}",
+            )
+        if action == "resume" and session.status != "idle":
+            raise ProtocolError(
+                "invalid_control_transition", f"Session '{session_id}' must be idle before resume",
+            )
+        session.status = target_status
         session.last_heartbeat_at = datetime.now(timezone.utc).isoformat()
         session.completed_at = session.last_heartbeat_at if action == "kill" else None
         session.error = "Stopped by user" if action == "kill" else None
@@ -2475,15 +2488,18 @@ class TaskloomEngine:
         self.state.save_worklog(worklog)
         trace = None
         if any(key in payload for key in ("commandExecuted", "stdout", "stderr", "exitCode")):
+            command, command_truncated = self._bounded_trace(payload.get("commandExecuted"))
             stdout, stdout_truncated = self._bounded_trace(payload.get("stdout"))
             stderr, stderr_truncated = self._bounded_trace(payload.get("stderr"))
-            digest = hashlib.sha256(f"{stdout}\0{stderr}".encode("utf-8")).hexdigest()
+            digest = hashlib.sha256(
+                f"{command}\0{stdout}\0{stderr}".encode("utf-8")
+            ).hexdigest()
             trace = ExecutionTrace(
                 id=str(uuid.uuid4()), task_id=task_id, worklog_id=worklog.id,
-                command_executed=self._redact_trace(str(payload.get("commandExecuted") or "")),
+                command_executed=command,
                 stdout_preview=stdout, stderr_preview=stderr,
                 exit_code=int(payload["exitCode"]) if payload.get("exitCode") is not None else None,
-                truncated=stdout_truncated or stderr_truncated,
+                truncated=command_truncated or stdout_truncated or stderr_truncated,
                 started_at=str(payload["startedAt"]) if payload.get("startedAt") else None,
                 completed_at=str(payload["completedAt"]) if payload.get("completedAt") else None,
                 content_sha256=digest,

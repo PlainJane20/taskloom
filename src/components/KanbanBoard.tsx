@@ -2,9 +2,9 @@ import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import { AlertTriangle, CheckCircle2, CirclePlay, ExternalLink, GitCommit, Pause, Play, Plus, ShieldAlert, Square, Terminal, X } from "lucide-react";
 import type { AgentBridge } from "../hooks/useAgentBridge";
-import type { AgentSession, AgentTask, ExecutionTrace, TaskStatus } from "../types";
+import type { AgentSession, AgentTask, TaskStatus } from "../types";
 import { ApprovalModal, type ApprovalDecisionPayload } from "./ApprovalModal";
-import { TraceModal } from "./TraceModal";
+import { TraceModal, type TraceEntry } from "./TraceModal";
 
 const columns: { statuses: TaskStatus[]; title: string; accent: string }[] = [
   { statuses: ["draft"], title: "Drafts / Pending Review", accent: "bg-violet-400" },
@@ -59,12 +59,16 @@ async function openExternalLink(event: MouseEvent<HTMLAnchorElement>, url: strin
   await open(url);
 }
 
-function TaskCard({ task, run, complete, disabled, collision, showTrace }: {
+function TaskCard({ task, session, run, complete, requestControl, disabled, collision, showTraces }: {
   task: AgentTask; run: (id: string) => void; complete: (task: AgentTask) => void;
+  session?: AgentSession;
+  requestControl: (session: AgentSession, action: "pause" | "resume" | "kill") => void;
   disabled: boolean; collision: boolean;
-  showTrace: (trace: ExecutionTrace) => void;
+  showTraces: (taskTitle: string, entries: TraceEntry[]) => void;
 }) {
-  const trace = [...(task.worklogs || [])].reverse().find((entry) => entry.trace)?.trace;
+  const traceEntries = (task.worklogs || []).flatMap((entry) => entry.trace ? [{
+    trace: entry.trace, message: entry.message, createdAt: entry.createdAt,
+  }] : []);
   const progress = task.progressTotal > 1 ? `${task.progressCurrent} of ${task.progressTotal} subtasks done` : null;
   const importedIssue = task.source === "provider" && task.links.some((link) => link.kind === "issue");
   return (
@@ -92,7 +96,12 @@ function TaskCard({ task, run, complete, disabled, collision, showTrace }: {
           ? <a key={link.id} href={link.url} target="_blank" rel="noreferrer" onClick={(event) => void openExternalLink(event, link.url!)} className="flex items-center gap-1 text-xs text-cyan-300 hover:text-cyan-200"><ExternalLink size={12} /> {link.label || link.kind}</a>
           : <span key={link.id} className="flex items-center gap-1 text-xs text-slate-400"><GitCommit size={12} /> {link.label || link.gitSha}</span>)}
       </div>}
-      {trace && <button onClick={() => showTrace(trace)} className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-cyan-300 hover:text-cyan-200"><Terminal size={14} /> View execution trace</button>}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {traceEntries.length > 0 && <button onClick={() => showTraces(task.title, traceEntries)} className="flex items-center gap-1.5 rounded-md px-1 py-1 text-xs font-semibold text-cyan-300 hover:bg-slate-700 hover:text-cyan-200"><Terminal size={14} /> View {traceEntries.length === 1 ? "execution trace" : `${traceEntries.length} execution traces`}</button>}
+        {session?.status === "active" && session.controlCapabilities.includes("pause") && <button aria-label={`Pause agent for ${task.title}`} title="Pause agent" disabled={disabled} onClick={() => requestControl(session, "pause")} className="rounded-md p-1.5 text-amber-300 hover:bg-slate-700 disabled:opacity-40"><Pause size={14} /></button>}
+        {session?.status === "idle" && session.controlCapabilities.includes("resume") && <button aria-label={`Resume agent for ${task.title}`} title="Resume agent" disabled={disabled} onClick={() => requestControl(session, "resume")} className="rounded-md p-1.5 text-emerald-300 hover:bg-slate-700 disabled:opacity-40"><Play size={14} /></button>}
+        {session?.status !== "completed" && session?.controlCapabilities.includes("kill") && <button aria-label={`Stop agent for ${task.title}`} title="Stop agent" disabled={disabled} onClick={() => requestControl(session, "kill")} className="rounded-md p-1.5 text-rose-300 hover:bg-slate-700 disabled:opacity-40"><Square size={14} /></button>}
+      </div>
       {task.error && <p className="mt-2 flex gap-1 text-xs text-rose-300"><AlertTriangle size={14} /> {task.error}</p>}
     </article>
   );
@@ -101,11 +110,12 @@ function TaskCard({ task, run, complete, disabled, collision, showTrace }: {
 export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
   const [showForm, setShowForm] = useState(false);
   const [pendingCompletion, setPendingCompletion] = useState<AgentTask | null>(null);
+  const [pendingControl, setPendingControl] = useState<{ session: AgentSession; action: "pause" | "resume" | "kill" } | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [completionNotice, setCompletionNotice] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
   const [groupBy, setGroupBy] = useState<GroupBy>("session");
-  const [trace, setTrace] = useState<ExecutionTrace | null>(null);
+  const [traceHistory, setTraceHistory] = useState<{ taskTitle: string; entries: TraceEntry[] } | null>(null);
   const collisions = useMemo(() => collisionTaskIds(bridge.tasks), [bridge.tasks]);
   const lanes = useMemo(() => {
     const result = new Map<string, AgentTask[]>();
@@ -160,10 +170,18 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
   }
 
   async function control(sessionId: string, action: "pause" | "resume" | "kill") {
-    setBusy(true); setFormError(null);
-    try { await bridge.controlSession(sessionId, action); }
+    setPendingControl(null); setBusy(true); setFormError(null); setCompletionNotice(null);
+    try {
+      await bridge.controlSession(sessionId, action);
+      setCompletionNotice({ tone: "success", message: `Agent session ${sessionId} ${action === "kill" ? "stopped" : action === "pause" ? "paused" : "resumed"}.` });
+    }
     catch (cause) { setFormError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
+  }
+
+  function requestControl(session: AgentSession, action: "pause" | "resume" | "kill") {
+    if (action === "kill") setPendingControl({ session, action });
+    else void control(session.id, action);
   }
 
   return (
@@ -188,9 +206,9 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
               {session && <span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${statusStyle(session.status)}`}>{session.status.replace(/_/g, " ")}</span>}
               {session?.branchName && <code className="text-xs text-slate-500">{session.branchName}</code>}
               {session && <div className="flex gap-1">
-                {session.status === "active" && session.controlCapabilities.includes("pause") && <button aria-label={`Pause ${session.id}`} disabled={busy} onClick={() => void control(session.id, "pause")} className="rounded p-1.5 text-amber-300 hover:bg-slate-800 disabled:opacity-40"><Pause size={14} /></button>}
-                {session.status === "idle" && session.controlCapabilities.includes("resume") && <button aria-label={`Resume ${session.id}`} disabled={busy} onClick={() => void control(session.id, "resume")} className="rounded p-1.5 text-emerald-300 hover:bg-slate-800 disabled:opacity-40"><Play size={14} /></button>}
-                {session.status !== "completed" && session.controlCapabilities.includes("kill") && <button aria-label={`Stop ${session.id}`} disabled={busy} onClick={() => void control(session.id, "kill")} className="rounded p-1.5 text-rose-300 hover:bg-slate-800 disabled:opacity-40"><Square size={14} /></button>}
+                {session.status === "active" && session.controlCapabilities.includes("pause") && <button aria-label={`Pause ${session.id}`} disabled={busy} onClick={() => requestControl(session, "pause")} className="rounded p-1.5 text-amber-300 hover:bg-slate-800 disabled:opacity-40"><Pause size={14} /></button>}
+                {session.status === "idle" && session.controlCapabilities.includes("resume") && <button aria-label={`Resume ${session.id}`} disabled={busy} onClick={() => requestControl(session, "resume")} className="rounded p-1.5 text-emerald-300 hover:bg-slate-800 disabled:opacity-40"><Play size={14} /></button>}
+                {session.status !== "completed" && session.controlCapabilities.includes("kill") && <button aria-label={`Stop ${session.id}`} disabled={busy} onClick={() => requestControl(session, "kill")} className="rounded p-1.5 text-rose-300 hover:bg-slate-800 disabled:opacity-40"><Square size={14} /></button>}
               </div>}
               {hasCollision && <span className="ml-auto flex items-center gap-1.5 rounded-lg border border-rose-900 bg-rose-950/40 px-3 py-1.5 text-xs text-rose-300"><ShieldAlert size={14} /> Multiple agents are touching the same directory</span>}
             </header>
@@ -199,7 +217,7 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
                 const items = tasks.filter((task) => column.statuses.includes(task.status));
                 return <div key={column.title} className="min-h-64 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
                   <div className="mb-3 flex items-center gap-2 px-1"><span className={`h-2 w-2 rounded-full ${column.accent}`} /><h4 className="text-xs font-semibold">{column.title}</h4><span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{items.length}</span></div>
-                  <div className="space-y-3">{items.map((task) => <TaskCard key={task.id} task={task} run={(id) => void run(id)} complete={setPendingCompletion} disabled={busy} collision={collisions.has(task.id)} showTrace={setTrace} />)}</div>
+                  <div className="space-y-3">{items.map((task) => <TaskCard key={task.id} task={task} session={bridge.sessions.find((item) => item.id === task.sessionId)} run={(id) => void run(id)} complete={setPendingCompletion} requestControl={requestControl} disabled={busy} collision={collisions.has(task.id)} showTraces={(taskTitle, entries) => setTraceHistory({ taskTitle, entries })} />)}</div>
                 </div>;
               })}
             </div>
@@ -235,7 +253,23 @@ export function KanbanBoard({ bridge }: { bridge: AgentBridge }) {
           </div>
         </div>
       </div>}
-      {trace && <TraceModal trace={trace} onClose={() => setTrace(null)} />}
+      {pendingControl?.action === "kill" && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/85 p-5" role="dialog" aria-modal="true" aria-labelledby="stop-agent-title">
+        <div className="w-full max-w-md rounded-2xl border border-rose-900 bg-slate-900 p-6 shadow-2xl">
+          <div className="flex items-start gap-3">
+            <span className="rounded-xl bg-rose-950 p-2 text-rose-300"><ShieldAlert size={24} /></span>
+            <div>
+              <h2 id="stop-agent-title" className="text-lg font-bold text-slate-100">Stop this agent session?</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-400">Session <strong className="text-slate-200">{pendingControl.session.id}</strong> will be asked to stop cooperatively. It cannot resume after acknowledging this request.</p>
+            </div>
+          </div>
+          <p className="mt-4 rounded-lg border border-amber-900/70 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">Taskloom records the control state, but an external agent must poll and honor the request.</p>
+          <div className="mt-6 flex justify-end gap-3">
+            <button type="button" disabled={busy} onClick={() => setPendingControl(null)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">Cancel</button>
+            <button type="button" disabled={busy} onClick={() => void control(pendingControl.session.id, "kill")} className="flex items-center gap-2 rounded-lg bg-rose-400 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-rose-300 disabled:opacity-40"><Square size={16} /> Stop agent</button>
+          </div>
+        </div>
+      </div>}
+      {traceHistory && <TraceModal taskTitle={traceHistory.taskTitle} entries={traceHistory.entries} onClose={() => setTraceHistory(null)} />}
       {bridge.approval && <ApprovalModal request={bridge.approval} onDecision={decide} busy={busy} />}
     </section>
   );

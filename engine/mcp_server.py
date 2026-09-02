@@ -22,7 +22,7 @@ def create_mcp_server(workspace: Path) -> tuple[MCPServer, TaskloomEngine]:
     write_lock = asyncio.Lock()
     server = MCPServer(
         "Taskloom",
-        version="0.6.0",
+        version="0.9.0",
         description="Governed local task ingestion, progress logging, and execution traces.",
         instructions=(
             "Use create_task for autonomous work. Supply an honest confidence_score and stable "

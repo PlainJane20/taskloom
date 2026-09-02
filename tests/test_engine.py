@@ -963,13 +963,14 @@ async def test_worklog_trace_is_redacted_bounded_and_persistent(tmp_path: Path) 
         "payload": {
             "taskId": "governed-1", "agentId": "builder-1", "sessionId": "session-1",
             "idempotencyKey": "log-1", "message": "Ran tests", "kind": "command",
-            "commandExecuted": "TOKEN=super-secret npm test", "stdout": "x" * 70_000,
+            "commandExecuted": "TOKEN=super-secret npm test " + ("x" * 70_000), "stdout": "x" * 70_000,
             "stderr": "Authorization: Bearer secret-token", "exitCode": 0,
         },
     })
 
     trace = response[0]["payload"]["worklog"]["trace"]
     assert trace["truncated"] is True
+    assert len(trace["commandExecuted"].encode("utf-8")) == engine.MAX_COMMAND_OUTPUT_BYTES
     assert len(trace["stdout"].encode("utf-8")) == engine.MAX_COMMAND_OUTPUT_BYTES
     assert "super-secret" not in trace["commandExecuted"]
     assert "secret-token" not in trace["stderr"]
@@ -1035,6 +1036,14 @@ async def test_agent_controls_require_advertised_cooperative_capability(tmp_path
     })
     assert resumed[0]["payload"]["session"]["status"] == "active"
 
+    killed = engine.control_agent_session("session-1", "kill")
+    assert killed.status == "completed"
+    assert engine.control_agent_session("session-1", "kill").status == "completed"
+    with pytest.raises(ProtocolError) as terminal:
+        engine.control_agent_session("session-1", "resume")
+    assert terminal.value.code == "invalid_control_transition"
+
+    engine.sessions["session-1"].status = "active"
     engine.sessions["session-1"].control_capabilities = ()
     engine.state.save_session(engine.sessions["session-1"])
     with pytest.raises(ProtocolError) as unsupported:

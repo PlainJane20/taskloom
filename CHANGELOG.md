@@ -3,6 +3,27 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-09-02
+
+### Added
+
+- Navigable per-task execution history showing every captured command, stdout/stderr stream, exit code, timestamp, worklog context, truncation state, and content digest.
+- Task-level pause, resume, and stop controls that remain available in session, agent, branch, and ungrouped board views.
+- An explicit confirmation boundary before a user sends a cooperative stop request to an agent session.
+- Visible success feedback after session pause, resume, and stop requests.
+
+### Safety and reliability
+
+- Applies secret redaction and the 64 KiB safety bound to command text as well as stdout and stderr.
+- Covers the complete redacted command/output envelope in each trace's SHA-256 digest.
+- Makes repeated control requests idempotent and prevents completed sessions from being resumed.
+- Aligns the official MCP server's advertised version with the Taskloom application release.
+
+### Verification
+
+- Expands automated coverage to 95 tests: 70 Python/MCP tests and 25 React interactions.
+- Adds regression coverage for trace-history navigation, card-level controls, stop confirmation, bounded command capture, and terminal session transitions.
+
 ## [0.8.1] - 2026-09-02
 
 ### Fixed
@@ -189,6 +210,8 @@ All notable Taskloom changes are documented here. This project follows
 - Tauri, React, TypeScript, Tailwind CSS, and Python JSONL desktop MVP.
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
+[0.9.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.9.0
+[0.8.1]: https://github.com/PlainJane20/taskloom/releases/tag/v0.8.1
 [0.4.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.4.0
 [0.8.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.8.0
 [0.7.2]: https://github.com/PlainJane20/taskloom/releases/tag/v0.7.2

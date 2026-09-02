@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.8.1-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.8.1)
+  [![Release](https://img.shields.io/badge/release-v0.9.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.9.0)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.8.1 is a working governed multi-agent automation platform with durable bidirectional GitHub Issues synchronization. While Taskloom is open, configurable background reconciliation imports new work, refreshes linked cards, detects remote closures and reopenings, and recovers from provider failures with visible bounded backoff. Imported Issue links open reliably in the system browser, and guarded completion still requires explicit confirmation before closing a linked Issue. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 89 automated tests.
+> **Project status:** Taskloom v0.9.0 is a working governed multi-agent automation platform with durable bidirectional GitHub Issues synchronization and inspectable execution history. Every captured command, output stream, exit result, timestamp, and digest is available from its task card; trace content is redacted and bounded before persistence. Cooperative pause, resume, and stop controls stay attached to agent work in every swimlane view, with an explicit confirmation boundary for terminal stop requests. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, and recoverable snapshots are covered by 95 automated tests.
 
 ## Why Taskloom
 
@@ -40,6 +40,7 @@ Taskloom moves those controls into a desktop automation studio:
 - **Resume seamlessly** — SQLite restores agents, workflows, runs, steps, tasks, and approvals.
 - **Close the loop with GitHub** — import Issues as linked cards and safely reflect completed work back to GitHub.
 - **Stay synchronized automatically** — reconcile provider work on a visible schedule with pause controls, health state, and bounded retry backoff.
+- **Inspect and govern execution** — review complete per-task terminal histories and control capable agent sessions directly from their cards.
 
 Taskloom is not another model competing with coding agents. It is the visual policy and orchestration layer above them.
 
@@ -333,7 +334,7 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **89 automated tests**: 66 Python/MCP tests and 23 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **95 automated tests**: 70 Python/MCP tests and 25 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 
@@ -349,6 +350,7 @@ taskloom/
 │   │   ├── IntegrationsDashboard.tsx     # GitHub connections, imports, conflicts, sync history
 │   │   ├── PlanApprovalModal.tsx        # Approve-once workflow boundary
 │   │   ├── KanbanBoard.tsx              # Individual task workflow
+│   │   ├── TraceModal.tsx                # Navigable redacted terminal history
 │   │   └── ApprovalModal.tsx            # Before/after mutation boundary
 │   ├── hooks/
 │   │   └── useAgentBridge.ts            # Python process and JSONL lifecycle
@@ -393,7 +395,7 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [x] Durable filesystem triggers with wildcard filters, cooldowns, and loop suppression
 - [x] Official MCP v2 governed task, progress, trace, and cooperative-control tools
 - [x] Confidence gating, idempotency, short-window clustering, and optimistic versions
-- [x] Agent/session/branch swimlanes, collision warnings, trace viewer, and Git/PR badges
+- [x] Agent/session/branch swimlanes, collision warnings, complete trace history, card-level cooperative controls, and Git/PR badges
 - [x] Bidirectional GitHub Issues sync with automatic reconciliation, remote close/reopen handling, conflicts, health state, and durable retries
 - [ ] Task editing, deletion, filtering, and run history
 - [ ] In-app workspace and model settings
@@ -418,7 +420,7 @@ Taskloom demonstrates several production-oriented software engineering challenge
 - Built a policy-driven mutation interceptor supporting four autonomy levels while preserving canonical path containment, atomic writes, durable approvals, and pre-write snapshots.
 - Coordinated state across React, a Python workflow state machine, and migration-safe SQLite tables while serializing local inference to control CPU/GPU pressure.
 - Built a credential-isolated provider boundary with idempotent reconciliation, optimistic conflict checks, exponential retries, and durable sync auditing.
-- Established 89 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
+- Established 95 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
 
 ## Contributing
 
