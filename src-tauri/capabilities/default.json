@@ -9,6 +9,7 @@
       "identifier": "shell:allow-spawn",
       "allow": [{ "name": "python3", "cmd": "python3", "args": true }]
     },
+    "shell:default",
     "shell:allow-stdin-write",
     "shell:allow-kill"
   ]

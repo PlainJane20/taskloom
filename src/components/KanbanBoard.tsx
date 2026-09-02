@@ -1,4 +1,5 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
+import { open } from "@tauri-apps/plugin-shell";
 import { AlertTriangle, CheckCircle2, CirclePlay, ExternalLink, GitCommit, Pause, Play, Plus, ShieldAlert, Square, Terminal, X } from "lucide-react";
 import type { AgentBridge } from "../hooks/useAgentBridge";
 import type { AgentSession, AgentTask, ExecutionTrace, TaskStatus } from "../types";
@@ -51,6 +52,13 @@ function statusStyle(status?: AgentSession["status"]): string {
   return "border-slate-700 bg-slate-800 text-slate-400";
 }
 
+async function openExternalLink(event: MouseEvent<HTMLAnchorElement>, url: string) {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+
+  event.preventDefault();
+  await open(url);
+}
+
 function TaskCard({ task, run, complete, disabled, collision, showTrace }: {
   task: AgentTask; run: (id: string) => void; complete: (task: AgentTask) => void;
   disabled: boolean; collision: boolean;
@@ -81,7 +89,7 @@ function TaskCard({ task, run, complete, disabled, collision, showTrace }: {
       {task.filePath && <code className="mt-3 block truncate rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-400">{task.filePath}</code>}
       {(task.links || []).length > 0 && <div className="mt-3 flex flex-wrap gap-2">
         {task.links.map((link) => link.url
-          ? <a key={link.id} href={link.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-cyan-300 hover:text-cyan-200"><ExternalLink size={12} /> {link.label || link.kind}</a>
+          ? <a key={link.id} href={link.url} target="_blank" rel="noreferrer" onClick={(event) => void openExternalLink(event, link.url!)} className="flex items-center gap-1 text-xs text-cyan-300 hover:text-cyan-200"><ExternalLink size={12} /> {link.label || link.kind}</a>
           : <span key={link.id} className="flex items-center gap-1 text-xs text-slate-400"><GitCommit size={12} /> {link.label || link.gitSha}</span>)}
       </div>}
       {trace && <button onClick={() => showTrace(trace)} className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-cyan-300 hover:text-cyan-200"><Terminal size={14} /> View execution trace</button>}

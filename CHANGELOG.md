@@ -3,6 +3,19 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-09-02
+
+### Fixed
+
+- Opens GitHub Issue and other external task links in the user's system browser from the Tauri desktop app.
+- Retains normal `target="_blank"` behavior when Taskloom runs as a web application.
+- Grants only the shell plugin's scoped default URL-opening permission for `http(s)`, `mailto`, and `tel` links.
+
+### Verification
+
+- Expands automated coverage to 89 tests: 66 Python/MCP and 23 React interactions.
+- Adds regression coverage proving imported Issue links invoke the Tauri external-link opener with the exact provider URL.
+
 ## [0.8.0] - 2026-09-01
 
 ### Added

@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.8.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.8.0)
+  [![Release](https://img.shields.io/badge/release-v0.8.1-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.8.1)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.8.0 is a working governed multi-agent automation platform with durable bidirectional GitHub Issues synchronization. While Taskloom is open, configurable background reconciliation imports new work, refreshes linked cards, detects remote closures and reopenings, and recovers from provider failures with visible bounded backoff. Guarded completion still requires explicit confirmation before closing a linked Issue. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 88 automated tests.
+> **Project status:** Taskloom v0.8.1 is a working governed multi-agent automation platform with durable bidirectional GitHub Issues synchronization. While Taskloom is open, configurable background reconciliation imports new work, refreshes linked cards, detects remote closures and reopenings, and recovers from provider failures with visible bounded backoff. Imported Issue links open reliably in the system browser, and guarded completion still requires explicit confirmation before closing a linked Issue. The platform also includes MCP v2 ingestion, agent/session swimlanes, terminal traces, cooperative controls, dependency-aware workflows, guarded validation, human approvals, and recoverable snapshots—all covered by 89 automated tests.
 
 ## Why Taskloom
 
@@ -333,7 +333,7 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **88 automated tests**: 66 Python/MCP tests and 22 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **89 automated tests**: 66 Python/MCP tests and 23 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 
@@ -418,7 +418,7 @@ Taskloom demonstrates several production-oriented software engineering challenge
 - Built a policy-driven mutation interceptor supporting four autonomy levels while preserving canonical path containment, atomic writes, durable approvals, and pre-write snapshots.
 - Coordinated state across React, a Python workflow state machine, and migration-safe SQLite tables while serializing local inference to control CPU/GPU pressure.
 - Built a credential-isolated provider boundary with idempotent reconciliation, optimistic conflict checks, exponential retries, and durable sync auditing.
-- Established 88 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
+- Established 89 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
 
 ## Contributing
 

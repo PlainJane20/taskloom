@@ -5,6 +5,9 @@ import type { AgentBridge } from "../../hooks/useAgentBridge";
 import type { AgentTask } from "../../types";
 import { KanbanBoard } from "../KanbanBoard";
 
+const openExternal = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("@tauri-apps/plugin-shell", () => ({ open: openExternal }));
+
 function task(overrides: Partial<AgentTask>): AgentTask {
   return {
     id: "task-1", title: "Governed task", prompt: "Perform safe work", status: "active",
@@ -114,6 +117,24 @@ describe("KanbanBoard governance view", () => {
 
     expect(testBridge.completeTask).toHaveBeenCalledWith(imported.id);
     expect(await screen.findByText("Closed PlainJane20/taskloom#1")).toBeInTheDocument();
+  });
+
+  it("opens imported issue links in the system browser when running in Tauri", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+    render(<KanbanBoard bridge={bridge([task({
+      title: "Imported issue", status: "backlog", source: "provider", filePath: null,
+      agentId: null, sessionId: null,
+      links: [{
+        id: "issue-4", kind: "issue", provider: "github", label: "PlainJane20/taskloom#2",
+        url: "https://github.com/PlainJane20/taskloom/issues/2", createdAt: "now",
+      }],
+    })])} />);
+
+    await user.click(screen.getByRole("link", { name: /PlainJane20\/taskloom#2/i }));
+
+    expect(openExternal).toHaveBeenCalledWith("https://github.com/PlainJane20/taskloom/issues/2");
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
   });
 
   it("keeps provider conflicts visible after a task is completed", async () => {
