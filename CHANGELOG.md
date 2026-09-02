@@ -3,6 +3,26 @@
 All notable Taskloom changes are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-09-02
+
+### Added
+
+- A dedicated Recovery Center with searchable snapshot history, date and agent filters, file metadata, and durable restore activity.
+- Side-by-side snapshot and current-file previews before any recovery action is offered.
+- Snapshot provenance for task, agent, reason, and source snapshot relationships.
+
+### Safety and reliability
+
+- Requires an explicit second confirmation before restoring a snapshot.
+- Rejects stale restore attempts when the current file hash no longer matches the version the user reviewed.
+- Creates a new safety snapshot before every restore, then performs the replacement atomically inside the configured workspace.
+- Persists successful and failed restore executions as an auditable recovery timeline.
+
+### Verification
+
+- Expands automated coverage to 114 tests: 77 Python/MCP tests and 37 React interactions.
+- Adds regression coverage for confirmed restores, pre-restore safety snapshots, stale previews, confirmation enforcement, filtering, comparison, and restore feedback.
+
 ## [0.11.0] - 2026-09-02
 
 ### Added
@@ -271,6 +291,7 @@ All notable Taskloom changes are documented here. This project follows
 - Tauri, React, TypeScript, Tailwind CSS, and Python JSONL desktop MVP.
 - Visual Kanban tasks, before/after approvals, snapshots, Ollama, and OpenAI adapters.
 
+[0.12.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.12.0
 [0.11.0]: https://github.com/PlainJane20/taskloom/releases/tag/v0.11.0
 [0.10.3]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.3
 [0.10.2]: https://github.com/PlainJane20/taskloom/releases/tag/v0.10.2

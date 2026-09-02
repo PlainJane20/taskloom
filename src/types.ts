@@ -248,6 +248,38 @@ export interface ExternalIssueLink {
   lastSyncedAt: string;
 }
 
+export interface FileSnapshot {
+  snapshotId: string;
+  filePath: string;
+  existed: boolean;
+  createdAt: string;
+  taskId?: string | null;
+  agentId?: string | null;
+  reason: "pre_write" | "pre_restore" | string;
+  sourceSnapshotId?: string | null;
+}
+
+export interface SnapshotPreview extends FileSnapshot {
+  snapshotContent: string;
+  snapshotTruncated: boolean;
+  snapshotSha256: string;
+  currentContent: string;
+  currentExists: boolean;
+  currentTruncated: boolean;
+  currentSha256: string;
+}
+
+export interface SnapshotRestoreEvent {
+  id: string;
+  snapshotId: string;
+  safetySnapshotId?: string | null;
+  filePath: string;
+  status: "running" | "completed" | "failed" | string;
+  error?: string | null;
+  createdAt: string;
+  completedAt?: string | null;
+}
+
 export interface StepRun {
   id: string;
   workflowRunId: string;

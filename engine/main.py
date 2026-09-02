@@ -305,6 +305,18 @@ class ExternalIssueLink:
     last_synced_at: str
 
 
+@dataclass
+class SnapshotRestoreEvent:
+    id: str
+    snapshot_id: str
+    file_path: str
+    status: str
+    safety_snapshot_id: str | None = None
+    error: str | None = None
+    created_at: str | None = None
+    completed_at: str | None = None
+
+
 class StateStore:
     """Durable SQLite storage for board state and unresolved approvals."""
 
@@ -585,6 +597,17 @@ class StateStore:
                 FOREIGN KEY(connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE,
                 UNIQUE(connection_id, external_id)
             );
+
+            CREATE TABLE IF NOT EXISTS snapshot_restore_events (
+                id TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                safety_snapshot_id TEXT,
+                file_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            );
             """
         )
         self._ensure_column("pending_changes", "workflow_run_id", "TEXT")
@@ -640,6 +663,12 @@ class StateStore:
                 """INSERT OR IGNORE INTO schema_migrations
                    (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)""",
                 (8, "provider-background-sync", "taskloom-v0.8-background-sync",
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            self.connection.execute(
+                """INSERT OR IGNORE INTO schema_migrations
+                   (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)""",
+                (12, "snapshot-recovery-center", "taskloom-v0.12-snapshot-recovery",
                  datetime.now(timezone.utc).isoformat()),
             )
 
@@ -1257,6 +1286,37 @@ class StateStore:
                  event.next_retry_at, event.created_at, event.completed_at),
             )
 
+    def load_snapshot_restore_events(self, limit: int = 100) -> list[SnapshotRestoreEvent]:
+        rows = self.connection.execute(
+            """SELECT id, snapshot_id, safety_snapshot_id, file_path, status, error,
+                      created_at, completed_at
+                 FROM snapshot_restore_events
+                ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [SnapshotRestoreEvent(
+            id=row["id"], snapshot_id=row["snapshot_id"],
+            safety_snapshot_id=row["safety_snapshot_id"], file_path=row["file_path"],
+            status=row["status"], error=row["error"], created_at=row["created_at"],
+            completed_at=row["completed_at"],
+        ) for row in rows]
+
+    def save_snapshot_restore_event(self, event: SnapshotRestoreEvent) -> None:
+        event.created_at = event.created_at or datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO snapshot_restore_events
+                   (id, snapshot_id, safety_snapshot_id, file_path, status, error,
+                    created_at, completed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                    safety_snapshot_id=excluded.safety_snapshot_id,
+                    status=excluded.status, error=excluded.error,
+                    completed_at=excluded.completed_at""",
+                (event.id, event.snapshot_id, event.safety_snapshot_id, event.file_path,
+                 event.status, event.error, event.created_at, event.completed_at),
+            )
+
     def load_external_issue_links(self) -> list[ExternalIssueLink]:
         rows = self.connection.execute(
             """SELECT id, task_id, connection_id, external_id, issue_number, url,
@@ -1335,6 +1395,8 @@ def atomic_write_text(destination: Path, content: str) -> None:
 class SnapshotStore:
     """Creates recoverable copies while preventing paths outside the workspace."""
 
+    MAX_PREVIEW_BYTES = 256 * 1024
+
     def __init__(self, workspace: Path, snapshot_dir: Path | None = None) -> None:
         self.workspace = workspace.resolve()
         self.snapshot_dir = (snapshot_dir or self.workspace / ".taskloom" / "snapshots").resolve()
@@ -1347,16 +1409,60 @@ class SnapshotStore:
             raise ProtocolError("unsafe_path", "File path must stay inside the workspace") from exc
         return candidate
 
-    def create(self, file_path: str) -> str:
+    def _snapshot_root(self, snapshot_id: str) -> Path:
+        if not snapshot_id or snapshot_id in {".", ".."} or Path(snapshot_id).name != snapshot_id:
+            raise ProtocolError("unsafe_snapshot", "Invalid snapshot ID")
+        snapshot_root = (self.snapshot_dir / snapshot_id).resolve()
+        try:
+            snapshot_root.relative_to(self.snapshot_dir)
+        except ValueError as exc:
+            raise ProtocolError("unsafe_snapshot", "Invalid snapshot ID") from exc
+        return snapshot_root
+
+    def _load_metadata(self, snapshot_id: str) -> dict[str, Any]:
+        metadata_path = self._snapshot_root(snapshot_id) / "snapshot.json"
+        if not metadata_path.is_file():
+            raise ProtocolError("snapshot_not_found", f"Snapshot '{snapshot_id}' does not exist")
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ProtocolError("invalid_snapshot", f"Snapshot '{snapshot_id}' is unreadable") from exc
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("file_path"), str):
+            raise ProtocolError("invalid_snapshot", f"Snapshot '{snapshot_id}' has invalid metadata")
+        self.resolve_path(metadata["file_path"])
+        return metadata
+
+    @staticmethod
+    def _digest(content: bytes) -> str:
+        return hashlib.sha256(content).hexdigest()
+
+    def _read_preview(self, path: Path) -> tuple[str, bool, bool, str]:
+        if not path.is_file():
+            return "", False, False, self._digest(b"")
+        content = path.read_bytes()
+        truncated = len(content) > self.MAX_PREVIEW_BYTES
+        preview = content[:self.MAX_PREVIEW_BYTES].decode("utf-8", errors="replace")
+        return preview, True, truncated, self._digest(content)
+
+    def create(
+        self, file_path: str, *, task_id: str | None = None,
+        agent_id: str | None = None, reason: str = "pre_write",
+        source_snapshot_id: str | None = None,
+    ) -> str:
         source = self.resolve_path(file_path)
+        normalized_path = source.relative_to(self.workspace).as_posix()
         snapshot_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:8]}"
-        target = self.snapshot_dir / snapshot_id / Path(file_path)
+        target = self.snapshot_dir / snapshot_id / normalized_path
         target.parent.mkdir(parents=True, exist_ok=True)
         metadata = {
             "snapshot_id": snapshot_id,
-            "file_path": file_path,
+            "file_path": normalized_path,
             "existed": source.is_file(),
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "reason": reason,
+            "source_snapshot_id": source_snapshot_id,
         }
         if source.is_file():
             shutil.copy2(source, target)
@@ -1364,22 +1470,63 @@ class SnapshotStore:
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return snapshot_id
 
-    def restore(self, snapshot_id: str) -> str:
-        snapshot_root = (self.snapshot_dir / snapshot_id).resolve()
+    def list(self) -> list[dict[str, Any]]:
+        if not self.snapshot_dir.is_dir():
+            return []
+        snapshots: list[dict[str, Any]] = []
+        for child in self.snapshot_dir.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                metadata = self._load_metadata(child.name)
+            except ProtocolError:
+                continue
+            snapshots.append(metadata)
+        return sorted(snapshots, key=lambda item: str(item.get("created_at", "")), reverse=True)
+
+    def preview(self, snapshot_id: str) -> dict[str, Any]:
+        metadata = self._load_metadata(snapshot_id)
+        snapshot_root = self._snapshot_root(snapshot_id)
+        snapshot_path = (snapshot_root / metadata["file_path"]).resolve()
         try:
-            snapshot_root.relative_to(self.snapshot_dir)
+            snapshot_path.relative_to(snapshot_root)
         except ValueError as exc:
-            raise ProtocolError("unsafe_snapshot", "Invalid snapshot ID") from exc
-        metadata_path = snapshot_root / "snapshot.json"
-        if not metadata_path.is_file():
-            raise ProtocolError("snapshot_not_found", f"Snapshot '{snapshot_id}' does not exist")
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            raise ProtocolError("unsafe_snapshot", "Snapshot content escaped its container") from exc
+        if bool(metadata.get("existed")):
+            if not snapshot_path.is_file():
+                raise ProtocolError("invalid_snapshot", "Snapshot content is missing")
+            snapshot_content, _, snapshot_truncated, snapshot_sha = self._read_preview(snapshot_path)
+        else:
+            snapshot_content, snapshot_truncated, snapshot_sha = "", False, self._digest(b"")
+        destination = self.resolve_path(metadata["file_path"])
+        current_content, current_exists, current_truncated, current_sha = self._read_preview(destination)
+        return {
+            **metadata,
+            "snapshot_content": snapshot_content,
+            "snapshot_truncated": snapshot_truncated,
+            "snapshot_sha256": snapshot_sha,
+            "current_content": current_content,
+            "current_exists": current_exists,
+            "current_truncated": current_truncated,
+            "current_sha256": current_sha,
+        }
+
+    def restore(self, snapshot_id: str) -> str:
+        snapshot_root = self._snapshot_root(snapshot_id)
+        metadata = self._load_metadata(snapshot_id)
         destination = self.resolve_path(metadata["file_path"])
         if metadata["existed"]:
-            source = snapshot_root / metadata["file_path"]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            source = (snapshot_root / metadata["file_path"]).resolve()
+            try:
+                source.relative_to(snapshot_root)
+            except ValueError as exc:
+                raise ProtocolError("unsafe_snapshot", "Snapshot content escaped its container") from exc
+            if not source.is_file():
+                raise ProtocolError("invalid_snapshot", "Snapshot content is missing")
+            atomic_write_text(destination, source.read_text(encoding="utf-8"))
         elif destination.exists():
+            if not destination.is_file():
+                raise ProtocolError("unsafe_restore", "Restore target is not a file")
             destination.unlink()
         return metadata["file_path"]
 
@@ -1482,6 +1629,7 @@ class TaskloomEngine:
             connection.id: connection for connection in self.state.load_provider_connections()
         }
         self.sync_events = self.state.load_sync_events()
+        self.snapshot_restore_events = self.state.load_snapshot_restore_events()
         self.external_issue_links = {
             (link.connection_id, link.external_id): link
             for link in self.state.load_external_issue_links()
@@ -1816,6 +1964,29 @@ class TaskloomEngine:
             "lastSyncedAt": link.last_synced_at,
         }
 
+    @staticmethod
+    def serialize_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "snapshotId": snapshot.get("snapshot_id"),
+            "filePath": snapshot.get("file_path"),
+            "existed": bool(snapshot.get("existed")),
+            "createdAt": snapshot.get("created_at"),
+            "taskId": snapshot.get("task_id"),
+            "agentId": snapshot.get("agent_id"),
+            "reason": snapshot.get("reason", "pre_write"),
+            "sourceSnapshotId": snapshot.get("source_snapshot_id"),
+        }
+
+    @staticmethod
+    def serialize_snapshot_restore_event(event: SnapshotRestoreEvent) -> dict[str, Any]:
+        return {
+            "id": event.id, "snapshotId": event.snapshot_id,
+            "safetySnapshotId": event.safety_snapshot_id,
+            "filePath": event.file_path, "status": event.status,
+            "error": event.error, "createdAt": event.created_at,
+            "completedAt": event.completed_at,
+        }
+
     def serialize_plan_approval(self, approval: PlanApproval) -> dict[str, Any]:
         run = self.workflow_runs[approval.workflow_run_id]
         workflow = self.workflows[approval.workflow_id]
@@ -1858,6 +2029,13 @@ class TaskloomEngine:
             "externalIssueLinks": [
                 self.serialize_external_issue_link(link)
                 for link in self.external_issue_links.values()
+            ],
+            "snapshots": [
+                self.serialize_snapshot(snapshot) for snapshot in self.snapshots.list()
+            ],
+            "snapshotRestoreEvents": [
+                self.serialize_snapshot_restore_event(event)
+                for event in self.snapshot_restore_events
             ],
         }
 
@@ -2369,7 +2547,9 @@ class TaskloomEngine:
                 elif workflow.approval_mode == "trusted" or (
                     workflow.approval_mode == "approve_plan" and run.plan_approved
                 ):
-                    self.snapshots.create(run.target_file)
+                    self.snapshots.create(
+                        run.target_file, agent_id=agent.id, reason="workflow_pre_write",
+                    )
                     atomic_write_text(target, proposed)
                     step.status = "completed"
                     self.update_task(task_id, "completed")
@@ -3619,7 +3799,10 @@ class TaskloomEngine:
             task = self.tasks[change.task_id]
             snapshot_id: str | None = None
             if decision == "approve":
-                snapshot_id = self.snapshots.create(change.file_path)
+                snapshot_id = self.snapshots.create(
+                    change.file_path, task_id=task.id, agent_id=task.agent_id,
+                    reason="approval_pre_write",
+                )
                 atomic_write_text(self.snapshots.resolve_path(change.file_path), change.after)
                 self.update_task(change.task_id, "completed")
             else:
@@ -3652,10 +3835,66 @@ class TaskloomEngine:
                 request_id, "task_updated",
                 {"task": self.serialize_task(task), "snapshotId": snapshot_id},
             ), {"type": "state_snapshot", "payload": self.state_payload()}]
-        if kind == "restore_snapshot":
+        if kind == "list_snapshots":
+            return [self._response(request_id, "snapshots_listed", {
+                "snapshots": [
+                    self.serialize_snapshot(snapshot) for snapshot in self.snapshots.list()
+                ],
+                "restoreEvents": [
+                    self.serialize_snapshot_restore_event(event)
+                    for event in self.snapshot_restore_events
+                ],
+            })]
+        if kind == "preview_snapshot":
             self._require(payload, "snapshotId")
-            file_path = self.snapshots.restore(str(payload["snapshotId"]))
-            return [self._response(request_id, "snapshot_restored", {"filePath": file_path})]
+            preview = self.snapshots.preview(str(payload["snapshotId"]))
+            return [self._response(request_id, "snapshot_preview", {
+                **self.serialize_snapshot(preview),
+                "snapshotContent": preview["snapshot_content"],
+                "snapshotTruncated": preview["snapshot_truncated"],
+                "snapshotSha256": preview["snapshot_sha256"],
+                "currentContent": preview["current_content"],
+                "currentExists": preview["current_exists"],
+                "currentTruncated": preview["current_truncated"],
+                "currentSha256": preview["current_sha256"],
+            })]
+        if kind == "restore_snapshot":
+            self._require(payload, "snapshotId", "expectedCurrentSha256")
+            if payload.get("confirmed") is not True:
+                raise ProtocolError("confirmation_required", "Snapshot restore requires confirmation")
+            snapshot_id = str(payload["snapshotId"])
+            preview = self.snapshots.preview(snapshot_id)
+            if str(payload["expectedCurrentSha256"]) != preview["current_sha256"]:
+                raise ProtocolError(
+                    "snapshot_conflict",
+                    "The file changed after preview. Review the latest contents before restoring.",
+                )
+            event = SnapshotRestoreEvent(
+                id=str(uuid.uuid4()), snapshot_id=snapshot_id,
+                file_path=str(preview["file_path"]), status="running",
+            )
+            self.state.save_snapshot_restore_event(event)
+            try:
+                event.safety_snapshot_id = self.snapshots.create(
+                    event.file_path, reason="pre_restore", source_snapshot_id=snapshot_id,
+                )
+                file_path = self.snapshots.restore(snapshot_id)
+                event.status = "completed"
+                event.completed_at = datetime.now(timezone.utc).isoformat()
+            except Exception as exc:
+                event.status = "failed"
+                event.error = str(exc)
+                event.completed_at = datetime.now(timezone.utc).isoformat()
+                self.state.save_snapshot_restore_event(event)
+                self.snapshot_restore_events.insert(0, event)
+                raise
+            self.state.save_snapshot_restore_event(event)
+            self.snapshot_restore_events.insert(0, event)
+            return [self._response(request_id, "snapshot_restored", {
+                "filePath": file_path,
+                "safetySnapshotId": event.safety_snapshot_id,
+                "restoreEvent": self.serialize_snapshot_restore_event(event),
+            }), {"type": "state_snapshot", "payload": self.state_payload()}]
         if kind == "read_file":
             self._require(payload, "filePath")
             path = self.snapshots.resolve_path(str(payload["filePath"]))

@@ -3,7 +3,8 @@ import { documentDir, join, resourceDir } from "@tauri-apps/api/path";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import type {
   AgentProfile, AgentSession, AgentTask, ApprovalRequest, AutomationTrigger, BridgeRequest, BridgeResponse,
-  AppSettings, ExternalIssueLink, FileTrigger, HealthReport, PlanApprovalRequest, ProviderConnection, SyncDirection, SyncEvent,
+  AppSettings, ExternalIssueLink, FileSnapshot, FileTrigger, HealthReport, PlanApprovalRequest, ProviderConnection,
+  SnapshotPreview, SnapshotRestoreEvent, SyncDirection, SyncEvent,
   Workflow, WorkflowRun,
 } from "../types";
 import { DEFAULT_SETTINGS } from "../settings";
@@ -24,6 +25,8 @@ export interface AgentBridge {
   providerConnections: ProviderConnection[];
   syncEvents: SyncEvent[];
   externalIssueLinks: ExternalIssueLink[];
+  snapshots: FileSnapshot[];
+  snapshotRestoreEvents: SnapshotRestoreEvent[];
   health: HealthReport | null;
   error: string | null;
   send: (message: BridgeRequest) => Promise<BridgeResponse>;
@@ -59,6 +62,9 @@ export interface AgentBridge {
   updateProviderConnectionSync: (connectionId: string, backgroundSyncEnabled: boolean, syncIntervalMinutes: number) => Promise<ProviderConnection>;
   syncProviderInbound: (connectionId: string) => Promise<{ imported: number; updated: number; unchanged: number; completed: number; reopened: number }>;
   syncTaskOutbound: (taskId: string, force?: boolean) => Promise<SyncEvent[]>;
+  previewSnapshot: (snapshotId: string) => Promise<SnapshotPreview>;
+  restoreSnapshot: (snapshotId: string, expectedCurrentSha256: string) => Promise<SnapshotRestoreEvent>;
+  refreshSnapshots: () => Promise<void>;
   runHealthCheck: () => Promise<HealthReport>;
   refresh: () => Promise<void>;
 }
@@ -87,6 +93,8 @@ export function useAgentBridge(settings: AppSettings = DEFAULT_SETTINGS): AgentB
   const [providerConnections, setProviderConnections] = useState<ProviderConnection[]>([]);
   const [syncEvents, setSyncEvents] = useState<SyncEvent[]>([]);
   const [externalIssueLinks, setExternalIssueLinks] = useState<ExternalIssueLink[]>([]);
+  const [snapshots, setSnapshots] = useState<FileSnapshot[]>([]);
+  const [snapshotRestoreEvents, setSnapshotRestoreEvents] = useState<SnapshotRestoreEvent[]>([]);
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const childRef = useRef<Child | null>(null);
@@ -144,6 +152,20 @@ export function useAgentBridge(settings: AppSettings = DEFAULT_SETTINGS): AgentB
       }
       if (Array.isArray(message.payload.externalIssueLinks)) {
         setExternalIssueLinks(message.payload.externalIssueLinks as unknown as ExternalIssueLink[]);
+      }
+      if (Array.isArray(message.payload.snapshots)) {
+        setSnapshots(message.payload.snapshots as unknown as FileSnapshot[]);
+      }
+      if (Array.isArray(message.payload.snapshotRestoreEvents)) {
+        setSnapshotRestoreEvents(message.payload.snapshotRestoreEvents as unknown as SnapshotRestoreEvent[]);
+      }
+    }
+    if (message.type === "snapshots_listed" && message.payload) {
+      if (Array.isArray(message.payload.snapshots)) {
+        setSnapshots(message.payload.snapshots as unknown as FileSnapshot[]);
+      }
+      if (Array.isArray(message.payload.restoreEvents)) {
+        setSnapshotRestoreEvents(message.payload.restoreEvents as unknown as SnapshotRestoreEvent[]);
       }
     }
     const task = message.payload?.task as AgentTask | undefined;
@@ -476,9 +498,26 @@ export function useAgentBridge(settings: AppSettings = DEFAULT_SETTINGS): AgentB
     return report;
   }, [send]);
 
+  const previewSnapshot = useCallback(async (snapshotId: string) => {
+    const response = await send({ type: "preview_snapshot", payload: { snapshotId } });
+    return response.payload as unknown as SnapshotPreview;
+  }, [send]);
+
+  const restoreSnapshot = useCallback(async (snapshotId: string, expectedCurrentSha256: string) => {
+    const response = await send({
+      type: "restore_snapshot",
+      payload: { snapshotId, expectedCurrentSha256, confirmed: true },
+    });
+    return response.payload?.restoreEvent as unknown as SnapshotRestoreEvent;
+  }, [send]);
+
+  const refreshSnapshots = useCallback(async () => {
+    await send({ type: "list_snapshots", payload: {} });
+  }, [send]);
+
   return {
     status, tasks, sessions, approval, planApproval, agents, workflows, workflowRuns, triggers, fileTriggers,
-    providerConnections, syncEvents, externalIssueLinks, health,
+    providerConnections, syncEvents, externalIssueLinks, snapshots, snapshotRestoreEvents, health,
     error, send,
     createTask, editTask, archiveTasks, runTask, completeTask, controlSession, decideApproval, decidePlanApproval, createAgent, createWorkflow,
     updateWorkflow, duplicateWorkflow, setWorkflowEnabled, archiveWorkflow,
@@ -487,6 +526,7 @@ export function useAgentBridge(settings: AppSettings = DEFAULT_SETTINGS): AgentB
     createProviderConnection, testProviderConnection, updateProviderConnectionSync,
     syncProviderInbound,
     syncTaskOutbound,
+    previewSnapshot, restoreSnapshot, refreshSnapshots,
     runHealthCheck,
     refresh,
   };

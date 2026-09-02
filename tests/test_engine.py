@@ -102,6 +102,69 @@ def test_snapshot_rejects_workspace_escape(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_snapshot_preview_and_confirmed_restore_create_safety_audit(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("version one\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    snapshot_id = engine.snapshots.create("notes.txt", task_id="task-1", agent_id="builder")
+    target.write_text("version two\n", encoding="utf-8")
+
+    preview_response = await engine.handle({
+        "id": "preview", "type": "preview_snapshot", "payload": {"snapshotId": snapshot_id},
+    })
+    preview = preview_response[0]["payload"]
+    assert preview["snapshotContent"] == "version one\n"
+    assert preview["currentContent"] == "version two\n"
+
+    restored = await engine.handle({
+        "id": "restore", "type": "restore_snapshot",
+        "payload": {
+            "snapshotId": snapshot_id,
+            "expectedCurrentSha256": preview["currentSha256"],
+            "confirmed": True,
+        },
+    })
+
+    event = restored[0]["payload"]["restoreEvent"]
+    assert target.read_text(encoding="utf-8") == "version one\n"
+    assert event["status"] == "completed"
+    assert event["safetySnapshotId"]
+    safety_preview = engine.snapshots.preview(event["safetySnapshotId"])
+    assert safety_preview["snapshot_content"] == "version two\n"
+    assert TaskloomEngine(tmp_path, llm=FakeLLM()).snapshot_restore_events[0].id == event["id"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_restore_requires_confirmation_and_fresh_preview(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("before\n", encoding="utf-8")
+    engine = TaskloomEngine(tmp_path, llm=FakeLLM())
+    snapshot_id = engine.snapshots.create("notes.txt")
+    target.write_text("current\n", encoding="utf-8")
+    preview = engine.snapshots.preview(snapshot_id)
+
+    with pytest.raises(ProtocolError) as unconfirmed:
+        await engine.handle({
+            "type": "restore_snapshot",
+            "payload": {"snapshotId": snapshot_id, "expectedCurrentSha256": preview["current_sha256"]},
+        })
+    assert unconfirmed.value.code == "confirmation_required"
+
+    target.write_text("changed after preview\n", encoding="utf-8")
+    with pytest.raises(ProtocolError) as stale:
+        await engine.handle({
+            "type": "restore_snapshot",
+            "payload": {
+                "snapshotId": snapshot_id,
+                "expectedCurrentSha256": preview["current_sha256"],
+                "confirmed": True,
+            },
+        })
+    assert stale.value.code == "snapshot_conflict"
+    assert target.read_text(encoding="utf-8") == "changed after preview\n"
+
+
+@pytest.mark.asyncio
 async def test_task_moves_through_approval_and_writes_only_after_approval(tmp_path: Path) -> None:
     target = tmp_path / "README.md"
     target.write_text("old content\n", encoding="utf-8")

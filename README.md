@@ -9,7 +9,7 @@
   humans remain in control—without managing terminals, orchestration files, or Git worktrees.
 
   [![CI](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml/badge.svg)](https://github.com/PlainJane20/taskloom/actions/workflows/ci.yml)
-  [![Release](https://img.shields.io/badge/release-v0.11.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.11.0)
+  [![Release](https://img.shields.io/badge/release-v0.12.0-24c8db.svg)](https://github.com/PlainJane20/taskloom/releases/tag/v0.12.0)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
   [![Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-ffc131.svg)](https://tauri.app/)
   [![React + TypeScript](https://img.shields.io/badge/UI-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -21,7 +21,7 @@
 ---
 
 > [!NOTE]
-> **Project status:** Taskloom v0.11.0 is a working governed multi-agent automation platform with durable task lifecycle management, replayable guided onboarding, in-app local configuration, environment health checks, bidirectional GitHub Issues synchronization, and inspectable execution history. Users can search, filter, inspect, edit, and safely archive work without deleting its local audit trail. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, recoverable snapshots, and local readiness checks are covered by 110 automated tests.
+> **Project status:** Taskloom v0.12.0 is a working governed multi-agent automation platform with durable task lifecycle management, replayable guided onboarding, in-app local configuration, environment health checks, bidirectional GitHub Issues synchronization, inspectable execution history, and a visual Snapshot Recovery Center. Users can search, compare, and safely restore earlier file states without leaving the application. Dependency-aware workflows, confidence gates, human approvals, background reconciliation, guarded validation, hash-verified recovery, and local readiness checks are covered by 114 automated tests.
 
 ## Why Taskloom
 
@@ -36,7 +36,7 @@ Taskloom moves those controls into a desktop automation studio:
 - **Automate recurring work** — schedule workflows, pause them, run them on demand, and retry transient failures.
 - **React to local changes** — watch files or filtered folders and launch the right guarded workflow automatically.
 - **Keep data local** — Ollama runs supported models on the user's machine.
-- **Recover safely** — every automated write remains workspace-confined, atomic, and snapshotted.
+- **Recover safely** — search and compare snapshots, then restore through a confirmed, hash-verified, and auditable workflow.
 - **Resume seamlessly** — SQLite restores agents, workflows, runs, steps, tasks, and approvals.
 - **Close the loop with GitHub** — import Issues as linked cards and safely reflect completed work back to GitHub.
 - **Stay synchronized automatically** — reconcile provider work on a visible schedule with pause controls, health state, and bounded retry backoff.
@@ -87,7 +87,7 @@ Goal / Schedule / File change → Workflow → Planner → Builder → Validator
 | Optional cloud inference | OpenAI provider adapter enabled only when the user supplies credentials |
 | Durable state | SQLite persistence for agents, workflows, runs, steps, tasks, errors, and approvals |
 | File safety | Canonical path containment prevents writes outside the selected workspace |
-| Recovery | Timestamped snapshots and atomic replacement preserve pre-write file state |
+| Recovery Center | Searchable snapshot history, side-by-side comparison, stale-preview protection, pre-restore snapshots, and atomic recovery |
 | Resource protection | A single execution lock prevents competing local model jobs from overwhelming a machine |
 | Resilient output handling | Removes accidental outer Markdown fences without altering embedded content |
 | Desktop distribution | Native Tauri shell with macOS application packaging and branded assets |
@@ -338,7 +338,7 @@ npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The repository currently contains **110 automated tests**: 75 Python/MCP tests and 35 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
+The repository currently contains **114 automated tests**: 77 Python/MCP tests and 37 React interaction tests. [GitHub Actions](.github/workflows/ci.yml) runs the engine, protocol, frontend, and native validation jobs for every push to `main` and every pull request targeting `main`.
 
 ## Project structure
 
@@ -353,6 +353,7 @@ taskloom/
 │   │   ├── AutomationDashboard.tsx      # Agents, workflows, schedules, file watches, run history
 │   │   ├── IntegrationsDashboard.tsx     # GitHub connections, imports, conflicts, sync history
 │   │   ├── SettingsDashboard.tsx         # Local provider configuration and readiness diagnostics
+│   │   ├── SnapshotsDashboard.tsx        # Snapshot search, comparison, restoration, and audit history
 │   │   ├── OnboardingModal.tsx           # Guided first-run safety and setup experience
 │   │   ├── PlanApprovalModal.tsx        # Approve-once workflow boundary
 │   │   ├── KanbanBoard.tsx              # Individual task workflow
@@ -417,6 +418,7 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [x] Bidirectional GitHub Issues sync with automatic reconciliation, remote close/reopen handling, conflicts, health state, and durable retries
 - [x] Searchable task details, activity history, optimistic editing, and non-destructive archival
 - [x] Guided onboarding, in-app workspace/model settings, and local environment health checks
+- [x] Snapshot browser with hash-verified, confirmed, and auditable one-click restoration
 - [ ] Syntax-aware diffs with line-level navigation
 - [ ] Custom structured validation rules beyond process exit status
 - [ ] GitHub and webhook triggers
@@ -424,7 +426,6 @@ Local ad-hoc builds may require approval in **System Settings → Privacy & Secu
 - [ ] Provider webhook signature verification, delivery ledger, and reconciliation queue
 - [ ] Parallel branches with configurable resource budgets
 - [ ] Bounded recursive subagent delegation (agent-level depth/count ceilings, read-only synchronous children, parent retains write ownership) — the *idea* of depth-bounded delegation is inspired by [Livery](https://github.com/sohailmamdani/livery)'s subagent model; see [issue #3](https://github.com/PlainJane20/taskloom/issues/3) for Taskloom's own independent design (no code borrowed)
-- [ ] Snapshot browser and one-click restoration
 - [ ] Compiled Python sidecar for zero-dependency installation
 - [ ] Signed and notarized macOS releases
 - [ ] Additional agent and provider adapters
@@ -439,7 +440,7 @@ Taskloom demonstrates several production-oriented software engineering challenge
 - Built a policy-driven mutation interceptor supporting four autonomy levels while preserving canonical path containment, atomic writes, durable approvals, and pre-write snapshots.
 - Coordinated state across React, a Python workflow state machine, and migration-safe SQLite tables while serializing local inference to control CPU/GPU pressure.
 - Built a credential-isolated provider boundary with idempotent reconciliation, optimistic conflict checks, exponential retries, and durable sync auditing.
-- Established 110 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
+- Established 114 automated tests and cross-language CI gates covering Python, MCP, React, TypeScript, and Rust.
 
 ## Contributing
 
