@@ -46,6 +46,18 @@ Taskloom moves those controls into a desktop automation studio:
 
 Taskloom is not another model competing with coding agents. It is the visual policy and orchestration layer above them.
 
+> **Why I built it:** this is a personal project, built to get real practice designing the
+> trust boundary between agent output and the humans who have to answer for it — the four
+> autonomy policies (Observe, Approve Changes, Approve Plan, Trusted), the pre-write
+> snapshot/restore path, and the append-only execution history exist because "the agent did
+> something" isn't an acceptable answer to anyone accountable for it. That's the same
+> competency a Staff/Principal TPM owns when rolling automation out to a non-technical
+> stakeholder group: not the model call itself, but the approval gates, rollback path, and
+> audit trail that let people actually say yes to it. It's also my first real desktop
+> application in this portfolio — coordinating a Tauri/Rust shell, a React UI, and a
+> long-running Python engine over a JSONL bridge taught me more about process lifecycle and
+> state-sync failure modes than any CLI tool here did.
+
 > **Related work in this portfolio:** [muster](https://github.com/PlainJane20/muster)
 > and [switchboard](https://github.com/PlainJane20/switchboard) are two more
 > independent takes on the same underlying interest — orchestrating a
