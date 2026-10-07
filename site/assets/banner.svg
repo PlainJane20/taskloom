@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-labelledby="title description">
+  <title id="title">Taskloom</title>
+  <desc id="description">A local-first visual control plane for teams of AI agents.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07131f"/>
+      <stop offset="0.56" stop-color="#0c2f4d"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity=".62"/>
+    </linearGradient>
+    <linearGradient id="ic" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#2563eb"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#67e8f9" stop-opacity=".25"/><stop offset="1" stop-color="#67e8f9" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1200" height="320" rx="24" fill="url(#bg)"/>
+  <circle cx="1040" cy="60" r="230" fill="url(#glow)"/>
+  <g transform="translate(74 68)">
+    <rect width="88" height="88" rx="22" fill="url(#ic)"/>
+    <g fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M26 30h36M26 44h36M26 58h36" stroke-width="4"/>
+    </g>
+  </g>
+  <text x="190" y="118" fill="#ecfeff" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="56" font-weight="700">Taskloom</text>
+  <text x="190" y="162" fill="#a5f3fc" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="24">A local-first visual control plane for teams of AI agents</text>
+  <text x="74" y="250" fill="#cffafe" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="20" opacity=".9">Four autonomy policies  ·  snapshot before every write  ·  durable approvals  ·  Tauri, React and Python</text>
+</svg>
