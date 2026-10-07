@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Taskloom: A local-first visual control plane for teams of AI agents</title>
+<meta name="description" content="A desktop app (Tauri 2 + Rust shell, React and TypeScript UI, a long-running Python engine) for building reusable agent teams and dependency-aware workflows. Each workflow carries one of four automation policies (**Observe**, **Approve Changes**, **Approve Plan**, **Trusted**) that decides whether generated output may become a file write. Every authorized write is path-checked, snapshotted and atomically replaced, and runs, approvals and history survive restarts in SQLite. Taskloom is &quot;the visual policy and orchestration layer above&quot; coding agents, not another model.">
+<style>/* Shared design system. Per-project accent variables are injected after this file. */
+:root{
+  --bg:#ffffff; --surface:#f5f7fa; --surface-2:#eceff4; --text:#12161c; --muted:#4a5565;
+  --border:#d5dbe3; --link:#0b57d0;
+  --ok-bg:#e3f4e8; --ok-fg:#14532d; --ok-bd:#9bd3ad;
+  --sim-bg:#fdf0c9; --sim-fg:#6b3a05; --sim-bd:#e8c56a;
+  --warn-bg:#fde4e1; --warn-fg:#8a1c14; --warn-bd:#eea59d;
+  --info-bg:#e4edfc; --info-fg:#1b3a7a; --info-bd:#a9c0ee;
+  --accent:#0b57d0; --accent-ink:#0b57d0; --accent-fill:#0b57d0; --on-accent:#ffffff; --accent-soft:#0b57d01f;
+  --radius:14px; --shadow:0 1px 2px rgba(15,23,42,.06),0 4px 16px rgba(15,23,42,.06);
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --header-h:60px;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0d1117; --surface:#161b22; --surface-2:#1e252e; --text:#e8ecf2; --muted:#a3adbb;
+    --border:#2c3541; --link:#8ab4ff;
+    --ok-bg:#12301f; --ok-fg:#8be0a6; --ok-bd:#235a37;
+    --sim-bg:#3a2a0a; --sim-fg:#fcd34d; --sim-bd:#6b4d12;
+    --warn-bg:#3d1816; --warn-fg:#ffaaa3; --warn-bd:#74302b;
+    --info-bg:#14284a; --info-fg:#a5c4ff; --info-bd:#2b4a80;
+    --accent-ink:#8ab4ff; --accent-fill:#2f6fe0; --on-accent:#ffffff; --accent-soft:#2f6fe026;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.35);
+  }
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--header-h) + 12px);-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:400 17px/1.65 var(--font);overflow-wrap:break-word}
+img,svg{max-width:100%;height:auto;display:block}
+a{color:var(--link);text-underline-offset:3px}
+a:hover{text-decoration-thickness:2px}
+code{font:500 .88em var(--mono);background:var(--surface-2);padding:.1em .38em;border-radius:6px;overflow-wrap:anywhere}
+h1,h2,h3{line-height:1.2;margin:0;letter-spacing:-.015em}
+p{margin:0 0 1em}
+:focus-visible{outline:3px solid var(--accent-ink);outline-offset:3px;border-radius:6px}
+.wrap{width:100%;max-width:1080px;margin:0 auto;padding:0 24px}
+.skip{position:absolute;left:12px;top:-60px;background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;z-index:100;font-weight:600}
+.skip:focus{top:12px}
+
+/* Header */
+.site-header{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:saturate(1.4) blur(10px);border-bottom:1px solid var(--border)}
+.bar{display:flex;align-items:center;gap:20px;min-height:var(--header-h)}
+.brand{display:inline-flex;align-items:center;gap:10px;font-weight:700;color:var(--text);text-decoration:none;white-space:nowrap}
+.brand-dot{width:14px;height:14px;border-radius:5px;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.site-header nav{display:flex;gap:4px;margin-left:auto;overflow-x:auto;scrollbar-width:none}
+.site-header nav::-webkit-scrollbar{display:none}
+.site-header nav a{color:var(--muted);text-decoration:none;padding:8px 10px;border-radius:8px;font-size:.92rem;font-weight:500;white-space:nowrap}
+.brand{flex-shrink:0;white-space:nowrap}
+@media (min-width:721px){
+  .bar{flex-wrap:wrap;gap:6px 12px}
+  .bar .btn-small{margin-left:auto}
+  .site-header nav{flex:1 1 auto;justify-content:flex-end;flex-wrap:wrap;overflow:visible}
+  .site-header nav a{padding:8px 6px;font-size:.88rem}
+}
+.site-header nav a:hover{color:var(--text);background:var(--surface-2)}
+.btn-small{white-space:nowrap;font-size:.9rem;font-weight:600;text-decoration:none;color:var(--text);border:1px solid var(--border);padding:7px 14px;border-radius:999px}
+.btn-small:hover{background:var(--surface-2)}
+
+/* Hero */
+.hero{padding:72px 0 56px;background:radial-gradient(900px 340px at 85% -10%,var(--accent-soft),transparent 70%),var(--bg);border-bottom:1px solid var(--border)}
+.kicker{color:var(--accent-ink);font-weight:700;font-size:.85rem;letter-spacing:.09em;text-transform:uppercase;margin-bottom:14px}
+.hero h1{font-size:clamp(2.4rem,6vw,4rem);font-weight:800}
+.tagline{font-size:clamp(1.25rem,2.6vw,1.7rem);color:var(--muted);margin:12px 0 22px;font-weight:500;line-height:1.35}
+.summary{max-width:760px;font-size:1.08rem}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin:28px 0 22px}
+.btn{display:inline-block;padding:12px 20px;border-radius:10px;font-weight:650;text-decoration:none;border:1.5px solid var(--border);color:var(--text);line-height:1.2}
+.btn-primary{background:var(--accent-fill);border-color:var(--accent-fill);color:var(--on-accent)}
+.btn-primary:hover{filter:brightness(1.08)}
+.btn-ghost:hover{background:var(--surface-2)}
+.chips{list-style:none;display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:0 0 32px}
+.chip{font-size:.84rem;font-weight:600;padding:5px 12px;border-radius:999px;border:1px solid;line-height:1.35}
+.chip-ok{background:var(--ok-bg);color:var(--ok-fg);border-color:var(--ok-bd)}
+.chip-sim{background:var(--sim-bg);color:var(--sim-fg);border-color:var(--sim-bd)}
+.chip-warn{background:var(--warn-bg);color:var(--warn-fg);border-color:var(--warn-bd)}
+.chip-info{background:var(--info-bg);color:var(--info-fg);border-color:var(--info-bd)}
+.banner{border-radius:20px;box-shadow:var(--shadow);width:100%}
+
+/* Sections */
+.section{padding:72px 0;border-bottom:1px solid var(--border)}
+.section.alt{background:var(--surface)}
+.eyebrow{margin:0 0 8px;font-size:.85rem;font-weight:700;letter-spacing:.1em;color:var(--accent-ink)}
+.section h2{font-size:clamp(1.7rem,3.6vw,2.4rem);font-weight:780;margin-bottom:20px}
+.lede{max-width:780px;font-size:1.06rem}
+.more{margin-top:20px}
+.cards{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:16px}
+.cards-3{grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr))}
+.cards li{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;border-top:3px solid var(--accent)}
+.section.alt .cards li{background:var(--bg)}
+.cards h3{font-size:1.06rem;margin-bottom:8px}
+.cards p{margin:0;color:var(--muted);font-size:.97rem}
+.related .rel-name{font-weight:700;font-size:1.05rem;display:inline-block;margin-bottom:6px;overflow-wrap:anywhere}
+
+/* How it works */
+.diagram{margin:28px 0;background:#f8fafc;border:1px solid var(--border);border-radius:var(--radius);padding:8px;box-shadow:var(--shadow)}
+.diagram img{border-radius:10px;width:100%}
+.diagram figcaption{color:#475569;font-size:.9rem;padding:10px 12px 6px}
+.stepper{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.stepper-hint{color:var(--muted);font-size:.85rem;font-weight:600;margin-bottom:12px;text-transform:uppercase;letter-spacing:.08em}
+.tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+.tabs button{font:inherit;font-size:.92rem;font-weight:600;display:inline-flex;align-items:center;gap:8px;padding:8px 14px 8px 8px;border-radius:999px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;text-align:left}
+.tabs button:hover{background:var(--surface-2)}
+.tab-n{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--surface-2);font-size:.8rem}
+.tabs button[aria-selected=true]{border-color:var(--accent-ink);background:var(--accent-soft)}
+.tabs button[aria-selected=true] .tab-n{background:var(--accent-fill);color:var(--on-accent)}
+.panel h3{font-size:1.25rem;margin-bottom:10px}
+.panel-n{color:var(--accent-ink);font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:4px}
+.panel p{max-width:760px}
+.panel-note{color:var(--sim-fg);background:var(--sim-bg);border:1px solid var(--sim-bd);border-radius:10px;padding:10px 14px;font-size:.93rem;font-weight:500}
+/* Without JS every stage is listed; with JS only the selected one. */
+html:not(.js) .tabs,html:not(.js) .stepper-hint{display:none}
+html:not(.js) .panel{padding:14px 0;border-top:1px solid var(--border)}
+html.js .panel[hidden]{display:none}
+
+/* Result tables */
+.result{margin:36px 0 0;padding:0}
+.result figcaption{font-size:1.2rem;font-weight:700;margin-bottom:8px}
+.tbl-context{color:var(--muted);max-width:860px;font-size:.97rem}
+.tbl-scroll{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius) var(--radius) 0 0;background:var(--bg)}
+table{border-collapse:collapse;width:100%;font-size:.95rem}
+th,td{text-align:left;padding:11px 16px;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{background:var(--surface-2);font-size:.82rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap}
+tbody th{font-weight:600}
+tbody tr:last-child th,tbody tr:last-child td{border-bottom:0}
+tbody tr:nth-child(even){background:color-mix(in srgb,var(--surface) 70%,transparent)}
+.caveat{margin:0;padding:14px 18px;background:var(--sim-bg);color:var(--sim-fg);border:1px solid var(--sim-bd);border-top:0;border-radius:0 0 var(--radius) var(--radius);font-size:.95rem;font-weight:500}
+.caveat-label{display:inline-block;font-size:.72rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase;border:1.5px solid currentColor;border-radius:6px;padding:1px 7px;margin-right:8px}
+.caveat code{background:rgba(0,0,0,.08)}
+.tbl-notes{color:var(--muted);font-size:.95rem;margin-top:14px;max-width:860px}
+.tbl-notes p{margin-bottom:.6em}
+.tbl-source{color:var(--muted);font-size:.85rem;margin:6px 0 0}
+
+/* Architecture */
+.pattern{background:var(--accent-soft);border-left:4px solid var(--accent);padding:14px 18px;border-radius:0 10px 10px 0;font-weight:600;max-width:860px}
+.pattern span{display:block;font-size:.75rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:2px}
+.flow{list-style:none;counter-reset:f;margin:28px 0 0;padding:0;display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr))}
+.flow li{counter-increment:f;position:relative;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px 16px 14px 52px;min-height:72px}
+.flow li::before{content:counter(f);position:absolute;left:14px;top:14px;width:26px;height:26px;border-radius:50%;background:var(--accent-fill);color:var(--on-accent);display:grid;place-items:center;font-weight:700;font-size:.85rem}
+.flow-label{display:block;font-weight:700}
+.flow-detail{display:block;color:var(--muted);font-size:.9rem;line-height:1.45;margin-top:2px}
+.flow + .stepper{margin-top:24px}
+
+/* Not built */
+.section.nb{background:var(--sim-bg);border-top:4px solid var(--sim-bd);border-bottom:4px solid var(--sim-bd)}
+.section.nb .eyebrow{color:var(--sim-fg)}
+.section.nb h2,.section.nb .lede{color:var(--text)}
+.nb-list{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr))}
+.nb-list li{background:var(--bg);border:1.5px dashed var(--sim-bd);border-radius:var(--radius);padding:18px 20px}
+.nb-list h3{font-size:1.02rem;margin:8px 0}
+.nb-list p{margin:0;color:var(--muted);font-size:.95rem}
+.status{display:inline-block;font-size:.72rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase;padding:2px 9px;border-radius:6px;border:1.5px solid}
+.status-not-built{background:var(--warn-bg);color:var(--warn-fg);border-color:var(--warn-bd)}
+.status-not-verified{background:var(--sim-bg);color:var(--sim-fg);border-color:var(--sim-bd)}
+.status-limit{background:var(--info-bg);color:var(--info-fg);border-color:var(--info-bd)}
+
+/* Roadmap */
+.roadmap{list-style:none;margin:8px 0 0;padding:0;max-width:860px}
+.roadmap li{display:grid;grid-template-columns:28px 76px 1fr;gap:6px 10px;align-items:baseline;padding:12px 0;border-bottom:1px solid var(--border)}
+.road-mark{font-weight:800;text-align:center}
+.done .road-mark{color:var(--ok-fg)}
+.todo .road-mark{color:var(--muted)}
+.road-state{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.done .road-state{color:var(--ok-fg)}
+
+/* Footer */
+.site-footer{background:var(--surface);padding:48px 0}
+.foot{display:flex;flex-wrap:wrap;gap:32px 64px;justify-content:space-between}
+.foot-title{font-weight:700;margin-bottom:8px}
+.foot-links{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-wrap:wrap;gap:6px 20px}
+.foot-note{color:var(--muted);font-size:.9rem;max-width:460px}
+.contact{text-align:left}
+.contact-name{font-size:1.25rem;font-weight:750;margin:0}
+.contact-role{color:var(--muted);margin:2px 0 12px}
+.contact-links{list-style:none;padding:0;margin:0;display:flex;gap:10px;flex-wrap:wrap}
+.contact-links a{display:inline-block;padding:8px 16px;border-radius:999px;border:1.5px solid var(--border);color:var(--text);font-weight:600;text-decoration:none;background:var(--bg)}
+.contact-links a:hover{border-color:var(--accent-ink)}
+
+/* Hub */
+.hub-grid{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:24px;grid-template-columns:repeat(auto-fill,minmax(min(100%,440px),1fr))}
+.hub-card{background:var(--bg);border:1px solid var(--border);border-radius:18px;padding:18px;box-shadow:var(--shadow);display:flex;flex-direction:column;border-top:4px solid var(--accent)}
+.hub-card img{border-radius:12px;margin-bottom:16px}
+.hub-card h2{font-size:1.6rem;margin:0 0 4px}
+.hub-card h2 a{color:var(--text);text-decoration:none}
+.hub-card h2 a:hover{color:var(--accent-ink);text-decoration:underline}
+.tagline-sm{color:var(--accent-ink);font-weight:650;margin-bottom:10px}
+.hub-card .chips{margin:6px 0 20px}
+.card-links{margin:auto 0 0;display:flex;flex-wrap:wrap;gap:10px}
+
+@media (max-width:720px){
+  body{font-size:16px}
+  .wrap{padding:0 18px}
+  .bar{flex-wrap:wrap;gap:6px 12px;padding-top:8px;padding-bottom:4px}
+  .site-header nav{order:3;width:100%;margin-left:-8px;padding-bottom:4px}
+  .btn-small{margin-left:auto}
+  :root{--header-h:96px}
+  .hero{padding:40px 0 36px}
+  .section{padding:48px 0}
+  .stepper{padding:14px}
+  .roadmap li{grid-template-columns:24px 1fr;}
+  .road-state{grid-column:2}
+  .road-text{grid-column:2}
+  th,td{padding:10px 12px}
+  .tbl-scroll.wide table{min-width:560px}
+  .diagram-scroll{overflow-x:auto}
+  .diagram-scroll img{min-width:760px}
+  .scroll-hint{display:block}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *{transition:none!important;animation:none!important}
+}
+@media print{.site-header,.skip{display:none}}
+thead code{text-transform:none;background:none;padding:0;letter-spacing:0}
+.diagram-scroll{border-radius:10px}
+.scroll-hint{display:none;color:var(--muted);font-size:.85rem;margin:-14px 0 20px}
+.hero h1+.summary{margin-top:20px}
+:root{--accent:#22d3ee;--accent-ink:#0b7a8b;--accent-fill:#0b7a8b;--on-accent:#ffffff;--accent-soft:#22d3ee1f;}@media (prefers-color-scheme:dark){:root{--accent-ink:#22d3ee;--accent-fill:#22d3ee;--on-accent:#0b0f14;--accent-soft:#22d3ee26;}}</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a><header class="site-header"><div class="wrap bar"><a class="brand" href="https://plainjane20.github.io/projects/"><span class="brand-dot" aria-hidden="true"></span>Taskloom</a><nav aria-label="Sections"><a href="#problem">Problem</a><a href="#how">How it works</a><a href="#measured">Measured</a><a href="#architecture">Architecture</a><a href="#competencies">Competencies</a><a href="#not-built">Not built</a><a href="#roadmap">Roadmap</a></nav><a class="btn-small" href="https://github.com/PlainJane20/taskloom" rel="noopener noreferrer" target="_blank">GitHub repo</a></div></header><main id="main"><section class="hero" aria-labelledby="hero-h"><div class="wrap"><p class="kicker">Portfolio project: desktop app + policy-gated agent workflows</p><h1 id="hero-h">Taskloom</h1><p class="tagline">A local-first visual control plane for teams of AI agents</p><p class="summary">A desktop app (Tauri 2 + Rust shell, React and TypeScript UI, a long-running Python engine) for building reusable agent teams and dependency-aware workflows. Each workflow carries one of four automation policies (<strong>Observe</strong>, <strong>Approve Changes</strong>, <strong>Approve Plan</strong>, <strong>Trusted</strong>) that decides whether generated output may become a file write. Every authorized write is path-checked, snapshotted and atomically replaced, and runs, approvals and history survive restarts in SQLite. Taskloom is &quot;the visual policy and orchestration layer above&quot; coding agents, not another model.</p><p class="cta"><a class="btn btn-primary" href="#measured">See what is measured</a><a class="btn btn-ghost" href="https://github.com/PlainJane20/taskloom" rel="noopener noreferrer" target="_blank">View the repo</a><a class="btn btn-ghost" href="#not-built">What is not built</a></p><ul class="chips" aria-label="Status"><li class="chip chip-ok">114 automated tests: 77 Python/MCP + 37 React</li><li class="chip chip-ok">CI: last run on main passed when checked</li><li class="chip chip-info">Release v0.12.0</li><li class="chip chip-sim">Model output is simulated in the tests</li><li class="chip chip-warn">Not signed or notarized</li><li class="chip chip-warn">Needs Python 3 and Ollama installed</li></ul><img class="banner" src="assets/banner.svg" alt="Taskloom banner: a local-first visual control plane for teams of AI agents" width="1200" height="320"></div></section><section id="problem" class="section " aria-labelledby="problem-h"><div class="wrap"><p class="eyebrow"><span>01</span></p><h2 id="problem-h">The problem</h2><p class="lede">Local coding agents are powerful, but their safest workflows still assume that the user is comfortable with command-line tools, configuration files, repository layouts, and raw diffs.</p><p class="lede">Taskloom moves those controls into a desktop automation studio. The question it was built to practise on is the trust boundary between agent output and the humans who have to answer for it: &quot;the agent did something&quot; is not an acceptable answer to anyone accountable for it.</p><ul class="cards cards-3"><li><h3>Output that writes itself</h3><p>Generated responses are treated as untrusted artifacts. Filesystem mutation requires either explicit approval or a workflow the user deliberately marked Trusted.</p></li><li><h3>No way back</h3><p>Every authorized write creates a snapshot first. Restores are confirmed twice, hash-verified, rejected if the file changed since the preview, and recorded in an auditable timeline.</p></li><li><h3>State that vanishes on restart</h3><p>SQLite restores agents, workflows, runs, steps, tasks and approvals. Active steps recover to a resumable queued state, and file and plan approvals survive restarts.</p></li></ul></div></section><section id="how" class="section alt" aria-labelledby="how-h"><div class="wrap"><p class="eyebrow"><span>02</span></p><h2 id="how-h">How it works</h2><p class="lede">A user, a schedule or a file change starts a workflow. Agents hand durable outputs to each other. The workflow&#x27;s policy decides whether a proposed change is only reported, reviewed, approved once as a plan, or applied automatically. Nothing is written without passing the path guard and a snapshot.</p><figure class="diagram"><div class="diagram-scroll" role="region" aria-label="Diagram, scrolls sideways on small screens" tabindex="0"><img src="assets/how-it-works.svg" alt="How Taskloom works: a goal, schedule or file change starts a workflow of agent steps; the automation policy decides whether a write may happen; every authorized write is path-checked, snapshotted and atomically replaced; an optional test command can block downstream steps" width="1200" height="360"></div><figcaption>Diagram drawn for this page from the README&#x27;s flow and numbered steps; the README&#x27;s own diagram is a Mermaid chart.</figcaption></figure><p class="scroll-hint">Swipe the diagram sideways to see all of it.</p><div class="stepper" data-stepper><p class="stepper-hint">Stages of the diagram, one at a time</p><div class="tabs" role="tablist" aria-label="Stages"><button type="button" role="tab" id="tab-0" aria-controls="panel-0" aria-selected="true" tabindex="0"><span class="tab-n">1</span><span class="tab-t">Trigger</span></button><button type="button" role="tab" id="tab-1" aria-controls="panel-1" aria-selected="false" tabindex="-1"><span class="tab-n">2</span><span class="tab-t">Workflow</span></button><button type="button" role="tab" id="tab-2" aria-controls="panel-2" aria-selected="false" tabindex="-1"><span class="tab-n">3</span><span class="tab-t">Policy</span></button><button type="button" role="tab" id="tab-3" aria-controls="panel-3" aria-selected="false" tabindex="-1"><span class="tab-n">4</span><span class="tab-t">Guarded write</span></button><button type="button" role="tab" id="tab-4" aria-controls="panel-4" aria-selected="false" tabindex="-1"><span class="tab-n">5</span><span class="tab-t">Validate</span></button></div><div class="panels"><div role="tabpanel" id="panel-0" aria-labelledby="tab-0" class="panel"><h3><span class="panel-n">Stage 1</span> Trigger</h3><p>A user selects or creates a workflow, supplies a goal, and chooses a workspace-relative target. Workflows can also start from an interval schedule or from a file or folder change.</p><p class="panel-note">Schedules and file watches run only while Taskloom is open.</p></div><div role="tabpanel" id="panel-1" aria-labelledby="tab-1" class="panel" data-later><h3><span class="panel-n">Stage 2</span> Workflow</h3><p>Taskloom resolves step dependencies and routes each step to its assigned agent (Planner, Builder, Validator, Reviewer). Agents exchange durable outputs while the engine limits local inference to one model job at a time.</p></div><div role="tabpanel" id="panel-2" aria-labelledby="tab-2" class="panel" data-later><h3><span class="panel-n">Stage 3</span> Policy</h3><p>The workflow&#x27;s policy determines whether Taskloom observes, pauses per change, requests one plan approval, or applies trusted changes automatically.</p><p>Observe: report only, never write. Approve Changes: review each before/after diff. Approve Plan: approve once, then execute the guarded plan. Trusted: automatic snapshots and atomic writes.</p></div><div role="tabpanel" id="panel-3" aria-labelledby="tab-3" class="panel" data-later><h3><span class="panel-n">Stage 4</span> Guarded write</h3><p>Every authorized write is path-checked, snapshotted, and atomically replaced before the run advances. A rejected proposal is deleted and the original file is unchanged.</p></div><div role="tabpanel" id="panel-4" aria-labelledby="tab-4" class="panel" data-later><h3><span class="panel-n">Stage 5</span> Validate</h3><p>Validation steps can run an explicitly configured test command and block downstream work when it fails or times out. The command runs without a shell, from an executable allowlist, with bounded output.</p><p class="panel-note">The README states that automation policy reduces operational risk; it does not prove generated code is correct.</p></div></div></div></div></section><section id="measured" class="section " aria-labelledby="measured-h"><div class="wrap"><p class="eyebrow"><span>03</span></p><h2 id="measured-h">What is measured</h2><p class="lede">The numbers below are the README&#x27;s and CHANGELOG&#x27;s own, copied verbatim. On 2026-10-06 the Python and React suites were also re-run on a fresh clone of the repository (77 and 37 tests, all passed).</p><figure class="result" aria-labelledby="tbl-0-cap"><figcaption id="tbl-0-cap">Automated tests at v0.12.0</figcaption><p class="tbl-context">As stated in the README (&quot;The repository currently contains 114 automated tests: 77 Python/MCP tests and 37 React interaction tests&quot;) and the 0.12.0 changelog entry.</p><div class="tbl-scroll wide" role="region" aria-labelledby="tbl-0-cap" tabindex="0"><table><thead><tr><th scope="col">Suite</th><th scope="col">Tests</th><th scope="col">Run by</th></tr></thead><tbody><tr><th scope="row">Python/MCP (engine, MCP adapter, providers)</th><td>77</td><td><code>python -m pytest -q</code></td></tr><tr><th scope="row">React interactions (Vitest + React Testing Library)</th><td>37</td><td><code>npm test</code></td></tr><tr><th scope="row">Total</th><td>114</td><td>CI: engine job and frontend job</td></tr></tbody></table></div><p class="caveat"><span class="caveat-label">Caveat</span> These are counts of tests, not coverage: the README reports no coverage percentage. Model output in the engine tests comes from a fake model (<code>FakeLLM</code>) and the GitHub provider tests use a <code>FakeGitHubProvider</code>, so output quality from a real local model is not measured here.</p><div class="tbl-notes"><p>CI runs three jobs on pushes and pull requests to <code>main</code>: React and TypeScript (<code>npm test</code>, <code>npm run build</code>), the Python engine (<code>python -m pytest -q</code>), and Tauri and Rust (<code>cargo check --locked</code>). The native job type-checks the Rust shell; it does not build or launch the desktop app.</p></div><p class="tbl-source">Source: <code>README.md</code> (Testing and quality), <code>CHANGELOG.md</code> [0.12.0], <code>.github/workflows/ci.yml</code></p></figure><figure class="result" aria-labelledby="tbl-1-cap"><figcaption id="tbl-1-cap">Test count by release, from the changelog</figcaption><p class="tbl-context">Each changelog release entry that states a total, using the changelog&#x27;s own wording (&quot;Expands&quot; or &quot;Increased automated coverage to N tests&quot;).</p><div class="tbl-scroll wide" role="region" aria-labelledby="tbl-1-cap" tabindex="0"><table><thead><tr><th scope="col">Release</th><th scope="col">Tests</th><th scope="col">Changelog date</th></tr></thead><tbody><tr><th scope="row">0.3.0</th><td>35</td><td>2026-09-01</td></tr><tr><th scope="row">0.6.0</th><td>65</td><td>2026-09-01</td></tr><tr><th scope="row">0.7.0</th><td>84</td><td>2026-09-01</td></tr><tr><th scope="row">0.7.1</th><td>86</td><td>2026-09-01</td></tr><tr><th scope="row">0.7.2</th><td>87</td><td>2026-09-01</td></tr><tr><th scope="row">0.8.0</th><td>88</td><td>2026-09-01</td></tr><tr><th scope="row">0.8.1</th><td>89</td><td>2026-09-02</td></tr><tr><th scope="row">0.9.0</th><td>95</td><td>2026-09-02</td></tr><tr><th scope="row">0.10.0</th><td>103</td><td>2026-09-02</td></tr><tr><th scope="row">0.10.3</th><td>104</td><td>2026-09-02</td></tr><tr><th scope="row">0.11.0</th><td>110</td><td>2026-09-02</td></tr><tr><th scope="row">0.12.0</th><td>114</td><td>2026-09-02</td></tr></tbody></table></div><p class="caveat"><span class="caveat-label">Caveat</span> Releases whose changelog entry states no total are left out (0.1.0, 0.2.0, 0.4.0, 0.5.0, 0.10.1, 0.10.2). The 0.3.0 entry says &quot;35 tests across Python and React&quot;. The dates are the changelog&#x27;s own, and a growing test count says nothing about how thorough the tests are.</p><p class="tbl-source">Source: <code>CHANGELOG.md</code></p></figure></div></section><section id="architecture" class="section alt" aria-labelledby="architecture-h"><div class="wrap"><p class="eyebrow"><span>04</span></p><h2 id="architecture-h">Architecture pattern</h2><p class="pattern"><span>Pattern</span> Policy at the mutation boundary: the model proposes content, a per-workflow policy decides, and a path guard, snapshot and atomic write sit between a decision and the filesystem.</p><p class="lede">The React application never writes agent output directly. It talks to a Python async engine over a JSONL bridge on stdin and stdout. The engine owns orchestration, policy, snapshots and SQLite state. The README calls the policy engine &quot;the system&#x27;s trust boundary&quot;.</p><ol class="flow"><li><span class="flow-label">Automation Studio (React + TypeScript)</span><span class="flow-detail">inside a Tauri 2 desktop shell</span></li><li><span class="flow-label">JSONL bridge</span><span class="flow-detail">stdin / stdout to the Python async engine</span></li><li><span class="flow-label">Engine: scheduler and workflow runner</span><span class="flow-detail">interval schedules, file watches, dependency-aware steps, one model job at a time</span></li><li><span class="flow-label">Model provider</span><span class="flow-detail">Ollama local-first; OpenAI only when the user supplies credentials</span></li><li><span class="flow-label">Automation policy</span><span class="flow-detail">Observe, Approve Changes, Approve Plan, Trusted; human decision where required</span></li><li><span class="flow-label">Path guard, snapshot, atomic write</span><span class="flow-detail">then the guarded validation command; failure stops the run and preserves output</span></li><li><span class="flow-label">SQLite state, plus governed MCP adapter and GitHub sync</span><span class="flow-detail">durable runs and approvals; external agents over MCP; Issues through the official gh CLI</span></li></ol><p class="more"><a href="https://github.com/PlainJane20/taskloom#architecture" rel="noopener noreferrer" target="_blank">Full Mermaid diagram in the README</a></p></div></section><section id="competencies" class="section " aria-labelledby="competencies-h"><div class="wrap"><p class="eyebrow"><span>05</span></p><h2 id="competencies-h">Competencies demonstrated</h2><ul class="cards cards-3"><li><h3>Trust-boundary design</h3><p>Four graduated autonomy policies; generated output is an untrusted artifact until a policy lets it through.</p></li><li><h3>Recovery and audit</h3><p>Pre-write snapshots, hash-verified confirmed restores, and an append-only execution history.</p></li><li><h3>Cross-language systems</h3><p>A language-neutral JSONL protocol between a React/Tauri interface and a long-running Python engine.</p></li><li><h3>Durable state</h3><p>Migration-safe SQLite tables; interrupted runs and approvals recover after restart.</p></li><li><h3>Credential isolation</h3><p>GitHub access goes through the authenticated official gh client; the token is never copied into SQLite.</p></li><li><h3>Delivery discipline</h3><p>Semantic-versioned releases with a changelog, and CI gates for Python, MCP, React, TypeScript and Rust.</p></li></ul></div></section><section id="not-built" class="section nb" aria-labelledby="not-built-h"><div class="wrap"><p class="eyebrow"><span>06</span></p><h2 id="not-built-h">What is not built or not verified yet</h2><p class="lede">Taken from the repository&#x27;s own README roadmap and limits, plus what was and was not checked for this page. Taskloom is the most mature project here, and this list is still not empty.</p><ul class="nb-list"><li><span class="status status-not-built">not built</span><h3>Bounded recursive subagent delegation</h3><p>The roadmap lists it as unchecked and points to open issue #3, which is a written design proposal (agent-level ceilings, read-only synchronous children). It is an unbuilt proposal, not a feature.</p></li><li><span class="status status-not-built">not built</span><h3>Compiled Python sidecar</h3><p>The MVP package requires Python 3 and Ollama on the destination machine; a compiled sidecar is planned.</p></li><li><span class="status status-not-built">not built</span><h3>Signed and notarized macOS releases</h3><p>Local ad-hoc builds may require approval in System Settings. Public releases should use an Apple Developer ID and notarization; that is not done.</p></li><li><span class="status status-not-built">not built</span><h3>Other open roadmap items</h3><p>Syntax-aware diffs with line-level navigation; custom structured validation rules beyond process exit status; GitHub and webhook triggers; Linear and Jira provider adapters; provider webhook signature verification, delivery ledger and reconciliation queue; parallel branches with configurable resource budgets; additional agent and provider adapters; multi-file transactions with all-or-nothing rollback.</p></li><li><span class="status status-not-verified">not verified</span><h3>Desktop app build and a real model</h3><p>CI runs <code>cargo check</code> on the Rust shell, not a full desktop build, and the tests use a fake model. The desktop packaging steps and the quality of real model output were not run or measured for this page.</p></li><li><span class="status status-limit">limit</span><h3>Policy is not correctness</h3><p>Automation policy reduces operational risk; it does not prove generated code is correct. The README advises starting new workflows in Observe or Approve Changes mode.</p></li><li><span class="status status-limit">limit</span><h3>Local-first means while it is open</h3><p>Schedules, file watches and automatic GitHub reconciliation run only while the Taskloom desktop engine is open.</p></li><li><span class="status status-limit">limit</span><h3>Agent controls are cooperative</h3><p>A session advertises supported controls and polls between operations, so Taskloom never claims to terminate a process it does not own.</p></li></ul></div></section><section id="roadmap" class="section alt" aria-labelledby="roadmap-h"><div class="wrap"><p class="eyebrow"><span>07</span></p><h2 id="roadmap-h">Roadmap</h2><ul class="roadmap"><li class="done"><span class="road-mark" aria-hidden="true">&#10003;</span><span class="road-state">Done</span><span class="road-text">Dependency-aware multi-agent workflows with Observe, Approve Changes, Approve Plan, and Trusted policies</span></li><li class="done"><span class="road-mark" aria-hidden="true">&#10003;</span><span class="road-state">Done</span><span class="road-text">Durable workflow and step-run history with restart recovery; serialized local inference and atomic guarded file writes</span></li><li class="done"><span class="road-mark" aria-hidden="true">&#10003;</span><span class="road-state">Done</span><span class="road-text">Guarded validation commands, durable interval schedules, and durable filesystem triggers</span></li><li class="done"><span class="road-mark" aria-hidden="true">&#10003;</span><span class="road-state">Done</span><span class="road-text">Official MCP v2 governed task, progress, trace, and cooperative-control tools</span></li><li class="done"><span class="road-mark" aria-hidden="true">&#10003;</span><span class="road-state">Done</span><span class="road-text">Bidirectional GitHub Issues sync with automatic reconciliation, conflicts, health state, and durable retries</span></li><li class="done"><span class="road-mark" aria-hidden="true">&#10003;</span><span class="road-state">Done</span><span class="road-text">Guided onboarding, in-app settings, and local environment health checks</span></li><li class="done"><span class="road-mark" aria-hidden="true">&#10003;</span><span class="road-state">Done</span><span class="road-text">Snapshot browser with hash-verified, confirmed, and auditable one-click restoration</span></li><li class="todo"><span class="road-mark" aria-hidden="true">&#9675;</span><span class="road-state">Not done</span><span class="road-text">Bounded recursive subagent delegation (design proposal in open issue #3; nothing built)</span></li><li class="todo"><span class="road-mark" aria-hidden="true">&#9675;</span><span class="road-state">Not done</span><span class="road-text">Compiled Python sidecar for zero-dependency installation</span></li><li class="todo"><span class="road-mark" aria-hidden="true">&#9675;</span><span class="road-state">Not done</span><span class="road-text">Signed and notarized macOS releases</span></li><li class="todo"><span class="road-mark" aria-hidden="true">&#9675;</span><span class="road-state">Not done</span><span class="road-text">GitHub and webhook triggers; Linear and Jira provider adapters</span></li><li class="todo"><span class="road-mark" aria-hidden="true">&#9675;</span><span class="road-state">Not done</span><span class="road-text">Multi-file transactions with all-or-nothing rollback</span></li></ul></div></section><section id="related" class="section " aria-labelledby="related-h"><div class="wrap"><p class="eyebrow"><span>08</span></p><h2 id="related-h">Related projects</h2><ul class="cards cards-3 related"><li><a class="rel-name" href="https://github.com/PlainJane20/muster" rel="noopener noreferrer" target="_blank">muster</a><p>Another independent take on orchestrating a fleet of AI agents; headless, and not a connected pipeline with Taskloom.</p></li><li><a class="rel-name" href="https://github.com/PlainJane20/switchboard" rel="noopener noreferrer" target="_blank">switchboard</a><p>Headless/CLI routing; Taskloom is the visual-desktop-app angle on the same interest.</p></li></ul></div></section></main><footer class="site-footer"><div class="wrap foot"><div><p class="foot-title">Taskloom</p><ul class="foot-links"><li><a href="https://github.com/PlainJane20/taskloom" rel="noopener noreferrer" target="_blank">Repository</a></li><li><a href="https://github.com/PlainJane20/taskloom/blob/main/CHANGELOG.md" rel="noopener noreferrer" target="_blank">Changelog</a></li><li><a href="https://github.com/PlainJane20/taskloom/releases/tag/v0.12.0" rel="noopener noreferrer" target="_blank">Release v0.12.0</a></li><li><a href="https://github.com/PlainJane20/taskloom/blob/main/.github/workflows/ci.yml" rel="noopener noreferrer" target="_blank">CI workflow</a></li><li><a href="https://github.com/PlainJane20/taskloom/issues/3" rel="noopener noreferrer" target="_blank">Issue #3 (proposal)</a></li><li>MIT license</li><li><a href="https://plainjane20.github.io/projects/">All projects</a></li></ul><p class="foot-note">Static page, no scripts beyond one small inline file, no trackers, no external requests.</p></div><div class="contact" id="contact"><p class="contact-name">Navi Sohi</p><p class="contact-role">Technical Program Manager &amp; Automation Engineer</p><ul class="contact-links"><li><a href="https://www.linkedin.com/in/navisohi/" rel="noopener noreferrer" target="_blank">LinkedIn</a></li><li><a href="https://github.com/PlainJane20" rel="noopener noreferrer" target="_blank">GitHub</a></li><li><a href="mailto:nks.ai.dev@gmail.com">Email</a></li></ul></div></div></footer>
+<script>/* Progressive enhancement: turns the stage list into an accessible tab set. */
+(function () {
+  var root = document.documentElement;
+  root.classList.add("js");
+  document.querySelectorAll("[data-stepper]").forEach(function (box) {
+    var tabs = Array.prototype.slice.call(box.querySelectorAll('[role="tab"]'));
+    var panels = Array.prototype.slice.call(box.querySelectorAll('[role="tabpanel"]'));
+    function select(i, focus) {
+      tabs.forEach(function (t, j) {
+        t.setAttribute("aria-selected", j === i ? "true" : "false");
+        t.tabIndex = j === i ? 0 : -1;
+      });
+      panels.forEach(function (p, j) { p.hidden = j !== i; });
+      if (focus) tabs[i].focus();
+    }
+    tabs.forEach(function (t, i) {
+      t.addEventListener("click", function () { select(i, false); });
+      t.addEventListener("keydown", function (e) {
+        var n = tabs.length, k = null;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") k = (i + 1) % n;
+        else if (e.key === "ArrowLeft" || e.key === "ArrowUp") k = (i + n - 1) % n;
+        else if (e.key === "Home") k = 0;
+        else if (e.key === "End") k = n - 1;
+        if (k !== null) { e.preventDefault(); select(k, true); }
+      });
+    });
+    select(0, false);
+  });
+})();
+</script>
+</body>
+</html>

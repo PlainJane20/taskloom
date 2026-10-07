@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-labelledby="t d" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<title id="t">How Taskloom works</title>
+<desc id="d">A goal, schedule or file change starts a dependency-aware workflow of Planner, Builder, Validator and Reviewer agents. The workflow's automation policy (Observe, Approve Changes, Approve Plan or Trusted) decides whether a proposed write happens. Every authorized write is path-checked, snapshotted and atomically replaced; a configured test command can block downstream steps.</desc>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#0e7490"/></marker><filter id="sh" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity=".12"/></filter></defs>
+<rect width="1200" height="360" rx="20" fill="#f8fafc"/>
+<text x="600" y="48" text-anchor="middle" font-size="26" font-weight="700" fill="#0f172a">How Taskloom works</text>
+<text x="600" y="76" text-anchor="middle" font-size="15" fill="#475569">A goal becomes a workflow run; the automation policy decides what may touch a file</text>
+<g filter="url(#sh)"><rect x="40.0" y="110" width="200" height="150" rx="14" fill="#ffffff" stroke="#22d3ee" stroke-width="2"/></g>
+<text x="140.0" y="142" text-anchor="middle" font-size="12" font-weight="700" fill="#475569" letter-spacing="0.6">1  TRIGGER</text>
+<text x="140.0" y="172" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Goal, schedule,</text>
+<text x="140.0" y="200" text-anchor="middle" font-size="14" fill="#334155">or file change</text>
+<text x="140.0" y="221" text-anchor="middle" font-size="14" fill="#334155">starts a workflow</text>
+<path d="M244 185H266" stroke="#0e7490" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+<g filter="url(#sh)"><rect x="270.0" y="110" width="200" height="150" rx="14" fill="#ffffff" stroke="#22d3ee" stroke-width="2"/></g>
+<text x="370.0" y="142" text-anchor="middle" font-size="12" font-weight="700" fill="#475569" letter-spacing="0.6">2  WORKFLOW</text>
+<text x="370.0" y="172" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Agent steps</text>
+<text x="370.0" y="200" text-anchor="middle" font-size="14" fill="#334155">Planner, Builder,</text>
+<text x="370.0" y="221" text-anchor="middle" font-size="14" fill="#334155">Validator, Reviewer</text>
+<text x="370.0" y="242" text-anchor="middle" font-size="14" fill="#334155">with dependencies</text>
+<path d="M474 185H496" stroke="#0e7490" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+<g filter="url(#sh)"><rect x="500.0" y="110" width="200" height="150" rx="14" fill="#ffffff" stroke="#22d3ee" stroke-width="2"/></g>
+<text x="600.0" y="142" text-anchor="middle" font-size="12" font-weight="700" fill="#475569" letter-spacing="0.6">3  POLICY</text>
+<text x="600.0" y="172" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Who may write?</text>
+<text x="600.0" y="200" text-anchor="middle" font-size="14" fill="#334155">Observe, Approve Changes,</text>
+<text x="600.0" y="221" text-anchor="middle" font-size="14" fill="#334155">Approve Plan, Trusted</text>
+<path d="M704 185H726" stroke="#0e7490" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+<g filter="url(#sh)"><rect x="730.0" y="110" width="200" height="150" rx="14" fill="#ffffff" stroke="#22d3ee" stroke-width="2"/></g>
+<text x="830.0" y="142" text-anchor="middle" font-size="12" font-weight="700" fill="#475569" letter-spacing="0.6">4  GUARDED WRITE</text>
+<text x="830.0" y="172" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Path, snapshot,</text>
+<text x="830.0" y="200" text-anchor="middle" font-size="14" fill="#334155">atomic replace</text>
+<text x="830.0" y="221" text-anchor="middle" font-size="14" fill="#334155">before the run advances</text>
+<path d="M934 185H956" stroke="#0e7490" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+<g filter="url(#sh)"><rect x="960.0" y="110" width="200" height="150" rx="14" fill="#ffffff" stroke="#22d3ee" stroke-width="2"/></g>
+<text x="1060.0" y="142" text-anchor="middle" font-size="12" font-weight="700" fill="#475569" letter-spacing="0.6">5  VALIDATE</text>
+<text x="1060.0" y="172" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Optional test gate</text>
+<text x="1060.0" y="200" text-anchor="middle" font-size="14" fill="#334155">blocks downstream work</text>
+<text x="1060.0" y="221" text-anchor="middle" font-size="14" fill="#334155">on failure or timeout</text>
+<text x="600" y="312" text-anchor="middle" font-size="16" fill="#334155">Observe never writes; Approve Changes pauses on each before/after diff; Approve Plan asks once; Trusted writes automatically.</text>
+<text x="600" y="338" text-anchor="middle" font-size="16" fill="#334155">Path guards, snapshots and atomic replacement stay mandatory even under Trusted.</text>
+</svg>
